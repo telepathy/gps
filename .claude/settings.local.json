@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod *)",
+      "Bash(go get *)",
+      "Bash(go build *)",
+      "Bash(pkill -f gps-server)",
+      "Bash(pkill -f gps-server find . -not -path './.git/*' -not -name 'gps-server' -not -name '.gitignore' -type f)"
+    ]
+  }
+}
