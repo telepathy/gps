@@ -52,6 +52,78 @@ func (sim *Simulator) Abort(planID string) {
 	}
 }
 
+// RetryModule re-runs a single failed module asynchronously.
+// It resets the module to RELEASING and runs the release pipeline in a goroutine.
+func (sim *Simulator) RetryModule(planID, moduleID string) error {
+	plan := sim.store.GetPlan(planID)
+	if plan == nil {
+		return fmt.Errorf("plan not found")
+	}
+
+	// Verify module exists and is in FAILED state
+	found := false
+	for _, m := range plan.Modules {
+		if m.ModuleID == moduleID {
+			if m.Status != model.StatusFailed {
+				return fmt.Errorf("module %s is not in FAILED status (current: %s)", moduleID, m.Status)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("module %s not found in plan", moduleID)
+	}
+
+	// Ensure the plan stays in RUNNING state if it was completed/aborted
+	sim.store.SetPlanRunning(planID)
+	sim.store.SetPlanPhase(planID, model.PhaseReleasing)
+	sim.store.Broadcast(planID, model.SSEEvent{
+		Type: "phase_change",
+		Data: model.PhaseChangeEvent{Phase: model.PhaseReleasing},
+	})
+
+	go sim.retryModuleAsync(planID, moduleID)
+	return nil
+}
+
+func (sim *Simulator) retryModuleAsync(planID, moduleID string) {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	cancel := make(chan struct{}) // non-cancellable for manual retry
+
+	sim.store.Broadcast(planID, model.SSEEvent{
+		Type: "module_log",
+		Data: model.ModuleLogEvent{
+			ModuleID:  moduleID,
+			Line:      "=== Manual retry triggered ===",
+			Timestamp: time.Now().UnixMilli(),
+		},
+	})
+
+	success := sim.releaseModule(planID, moduleID, rng, cancel, 0)
+
+	if success {
+		// Check if all modules are now terminal (SUCCESS/FAILED/SKIPPED)
+		progress := sim.store.GetProgress(planID)
+		if progress != nil && progress.Releasing == 0 && progress.Pending == 0 && progress.Tagged == 0 {
+			finalStatus := model.PlanCompleted
+			if progress.Failed > 0 {
+				finalStatus = model.PlanAborted
+			}
+			sim.store.CompletePlan(planID, finalStatus)
+			sim.store.Broadcast(planID, model.SSEEvent{
+				Type: "plan_complete",
+				Data: model.PlanCompleteEvent{
+					Status:    finalStatus,
+					Succeeded: progress.Succeeded,
+					Failed:    progress.Failed,
+					Skipped:   progress.Skipped,
+				},
+			})
+		}
+	}
+}
+
 func (sim *Simulator) run(planID string, cancel chan struct{}) {
 	defer func() {
 		sim.mu.Lock()

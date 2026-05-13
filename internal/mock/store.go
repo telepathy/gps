@@ -103,7 +103,6 @@ func (s *Store) seedHistory() {
 				RepoName:      repoName,
 				SiloID:        m.SiloID,
 				SiloName:      siloName,
-				Layer:         m.Layer,
 				PrevVersion:   m.CurrentVersion,
 				TargetVersion: bumpPatch(m.CurrentVersion),
 				Status:        model.StatusSuccess,
@@ -299,6 +298,9 @@ func (s *Store) CreatePlan(req model.CreatePlanRequest) *model.ReleasePlan {
 		siloSet[id] = true
 	}
 
+	// Compute repo-level target versions (all modules in same repo share version)
+	repoTargetVersions := make(map[string]string)
+
 	var entries []model.PlanModuleEntry
 	for _, m := range s.Modules {
 		if !siloSet[m.SiloID] {
@@ -315,6 +317,11 @@ func (s *Store) CreatePlan(req model.CreatePlanRequest) *model.ReleasePlan {
 			siloName = silo.Name
 		}
 
+		// Compute target version once per repo
+		if _, ok := repoTargetVersions[m.RepoID]; !ok {
+			repoTargetVersions[m.RepoID] = bumpPatch(m.CurrentVersion)
+		}
+
 		entries = append(entries, model.PlanModuleEntry{
 			ModuleID:      m.ID,
 			ModuleName:    m.Name,
@@ -322,9 +329,8 @@ func (s *Store) CreatePlan(req model.CreatePlanRequest) *model.ReleasePlan {
 			RepoName:      repoName,
 			SiloID:        m.SiloID,
 			SiloName:      siloName,
-			Layer:         m.Layer,
 			PrevVersion:   m.CurrentVersion,
-			TargetVersion: bumpPatch(m.CurrentVersion),
+			TargetVersion: repoTargetVersions[m.RepoID],
 			Status:        model.StatusPending,
 		})
 	}
@@ -372,8 +378,10 @@ func (s *Store) UpdateVersions(planID string, versions map[string]string) error 
 	if plan.Status != model.PlanDraft {
 		return fmt.Errorf("plan is not in DRAFT status")
 	}
+	// versions is keyed by repo_id -> new version
+	// Apply to all modules in that repo
 	for i := range plan.Modules {
-		if v, exists := versions[plan.Modules[i].ModuleID]; exists {
+		if v, exists := versions[plan.Modules[i].RepoID]; exists {
 			plan.Modules[i].TargetVersion = v
 			plan.Modules[i].IsOverridden = true
 		}

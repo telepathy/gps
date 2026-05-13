@@ -46,6 +46,7 @@ func main() {
 		api.GET("/plans/:id/progress", releaseHandler.GetProgress)
 		api.GET("/plans/:id/events", releaseHandler.SSEEvents)
 		api.POST("/plans/:id/abort", releaseHandler.Abort)
+		api.POST("/plans/:id/modules/:mid/retry", releaseHandler.RetryModule)
 
 		// History
 		api.GET("/history", historyHandler.ListHistory)

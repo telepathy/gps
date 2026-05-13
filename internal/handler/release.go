@@ -75,3 +75,13 @@ func (h *ReleaseHandler) Abort(c *gin.Context) {
 	h.simulator.Abort(planID)
 	c.JSON(http.StatusOK, gin.H{"status": "aborted", "plan_id": planID})
 }
+
+func (h *ReleaseHandler) RetryModule(c *gin.Context) {
+	planID := c.Param("id")
+	moduleID := c.Param("mid")
+	if err := h.simulator.RetryModule(planID, moduleID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "retrying", "plan_id": planID, "module_id": moduleID})
+}

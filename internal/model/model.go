@@ -26,7 +26,6 @@ type Module struct {
 	SiloID         string `json:"silo_id"`
 	Name           string `json:"name"`
 	CurrentVersion string `json:"current_version"`
-	Layer          int    `json:"layer"` // 0-4, for DAG layout
 }
 
 // --- Dependency Graph ---
@@ -91,7 +90,6 @@ type PlanModuleEntry struct {
 	RepoName      string       `json:"repo_name"`
 	SiloID        string       `json:"silo_id"`
 	SiloName      string       `json:"silo_name"`
-	Layer         int          `json:"layer"`
 	PrevVersion   string       `json:"prev_version"`
 	TargetVersion string       `json:"target_version"`
 	IsOverridden  bool         `json:"is_overridden"`

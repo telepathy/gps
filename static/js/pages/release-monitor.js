@@ -95,7 +95,6 @@ const ReleaseMonitorPage = {
                 const dagModules = (this.plan.modules || []).map(m => ({
                     module_id: m.module_id,
                     module_name: m.module_name,
-                    layer: m.layer,
                     status: m.status,
                 }));
 
@@ -311,6 +310,7 @@ const ReleaseMonitorPage = {
 
         // Use latest status from cache
         const liveStatus = this.moduleStatusCache[moduleId] || mod.status;
+        const isFailed = liveStatus === 'FAILED';
 
         detail.style.display = 'block';
         detail.innerHTML = `
@@ -329,7 +329,8 @@ const ReleaseMonitorPage = {
                 <span class="module-detail-value">${mod.retry_count || 0}</span>
                 ${mod.error_msg ? `<span class="module-detail-label">错误:</span><span class="module-detail-value" style="color:var(--danger);">${mod.error_msg}</span>` : ''}
             </div>
-            <div style="margin-top:8px;">
+            <div style="margin-top:10px;display:flex;gap:8px;">
+                ${isFailed ? `<button class="btn btn-danger btn-sm" id="retry-module-btn">&#8635; 重试该模块</button>` : ''}
                 <button class="btn btn-ghost btn-sm" id="clear-filter-btn">
                     查看全部日志
                 </button>
@@ -342,6 +343,25 @@ const ReleaseMonitorPage = {
             this.dagGraph.selectNode(null);
             detail.style.display = 'none';
         };
+
+        if (isFailed) {
+            detail.querySelector('#retry-module-btn').onclick = async () => {
+                const btn = detail.querySelector('#retry-module-btn');
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spinner"></span> 重试中...';
+                try {
+                    await API.retryModule(this.planId, moduleId);
+                    // Restart SSE + polling to track the retry
+                    this._startSSE(this.planId);
+                    this._startPolling(this.planId);
+                    document.getElementById('abort-btn').style.display = 'inline-flex';
+                } catch (err) {
+                    alert('重试失败: ' + err.message);
+                    btn.disabled = false;
+                    btn.innerHTML = '&#8635; 重试该模块';
+                }
+            };
+        }
     },
 
     _bindEvents(container, planId) {

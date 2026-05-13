@@ -186,26 +186,27 @@ const PlanCreatePage = {
         const grouped = {};
         allModules.forEach(m => {
             const key = `${m._siloName} / ${m._repoName}`;
-            if (!grouped[key]) grouped[key] = [];
-            grouped[key].push(m);
+            if (!grouped[key]) grouped[key] = { modules: [], version: m.current_version };
+            grouped[key].modules.push(m);
         });
 
         let html = '<div class="table-wrap"><table><thead><tr>';
-        html += '<th>竖井 / 仓库</th><th>模块</th><th>当前版本</th><th>目标版本</th>';
+        html += '<th>竖井 / 仓库</th><th>当前版本</th><th></th><th>目标版本</th><th>模块</th>';
         html += '</tr></thead><tbody>';
 
-        Object.entries(grouped).forEach(([group, mods]) => {
-            mods.forEach((m, i) => {
-                const target = this._bumpPatch(m.current_version);
-                html += `<tr>`;
-                if (i === 0) {
-                    html += `<td rowspan="${mods.length}" style="font-weight:600;color:var(--text-bright);vertical-align:top;">${group}</td>`;
-                }
-                html += `<td>${m.name}</td>`;
-                html += `<td><code style="color:var(--text-dim);">${m.current_version}</code></td>`;
-                html += `<td><code style="color:var(--success);">${target}</code></td>`;
-                html += `</tr>`;
-            });
+        Object.entries(grouped).forEach(([group, data]) => {
+            const target = this._bumpPatch(data.version);
+            const modNames = data.modules.map(m => {
+                const parts = m.name.split('-');
+                return parts[parts.length - 1];
+            }).join(', ');
+            html += `<tr>`;
+            html += `<td style="font-weight:600;color:var(--text-bright);">${group}</td>`;
+            html += `<td><code style="color:var(--text-dim);">${data.version}</code></td>`;
+            html += `<td class="version-arrow">&rarr;</td>`;
+            html += `<td><code style="color:var(--success);">${target}</code></td>`;
+            html += `<td style="font-size:12px;color:var(--text-dim);">${modNames} <span style="color:var(--text-dim);opacity:0.6;">(${data.modules.length})</span></td>`;
+            html += `</tr>`;
         });
 
         html += '</tbody></table></div>';

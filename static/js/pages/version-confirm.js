@@ -1,7 +1,7 @@
-// Version Confirmation Page
+// Version Confirmation Page — version is repo-level (one tag per repo)
 const VersionConfirmPage = {
     plan: null,
-    editedVersions: {},
+    editedRepoVersions: {}, // repo_id -> version
     collapsedGroups: new Set(),
 
     async render(container, planId) {
@@ -10,7 +10,7 @@ const VersionConfirmPage = {
                 <div class="page-header">
                     <div>
                         <h1 class="page-title">版本确认</h1>
-                        <p class="page-subtitle">Plan: ${planId}</p>
+                        <p class="page-subtitle">Plan: ${planId} — 版本号以仓库为粒度，同仓库内模块共享同一 Tag</p>
                     </div>
                     <div style="display:flex;gap:8px;">
                         <button class="btn btn-ghost" onclick="location.hash='#/'">返回</button>
@@ -24,7 +24,7 @@ const VersionConfirmPage = {
 
                 <div class="search-box">
                     <span class="search-icon">&#128269;</span>
-                    <input type="text" id="module-search" placeholder="搜索模块...">
+                    <input type="text" id="module-search" placeholder="搜索仓库或模块...">
                 </div>
 
                 <div id="version-groups"></div>
@@ -38,7 +38,7 @@ const VersionConfirmPage = {
     async _loadPlan(planId) {
         try {
             this.plan = await API.getPlan(planId);
-            this.editedVersions = {};
+            this.editedRepoVersions = {};
             this._renderAll();
         } catch (err) {
             console.error('Failed to load plan:', err);
@@ -48,13 +48,23 @@ const VersionConfirmPage = {
     _renderAll(filter) {
         if (!this.plan) return;
 
-        // Stats
-        const stats = document.getElementById('version-stats');
         const modules = this.plan.modules || [];
-        const overridden = modules.filter(m => m.is_overridden).length;
+
+        // Count unique repos and overridden repos
+        const repoSet = new Set();
+        const overriddenRepos = new Set();
+        modules.forEach(m => {
+            repoSet.add(m.repo_id);
+            if (m.is_overridden || this.editedRepoVersions[m.repo_id]) {
+                overriddenRepos.add(m.repo_id);
+            }
+        });
+
+        const stats = document.getElementById('version-stats');
         stats.innerHTML = `
-            <div class="stat-item stat-total"><span class="stat-value">${modules.length}</span><span class="stat-label">总模块</span></div>
-            <div class="stat-item" style="--stat-color:var(--warning);"><span class="stat-value" style="color:var(--warning);">${overridden}</span><span class="stat-label">已修改</span></div>
+            <div class="stat-item stat-total"><span class="stat-value">${repoSet.size}</span><span class="stat-label">仓库</span></div>
+            <div class="stat-item stat-total"><span class="stat-value">${modules.length}</span><span class="stat-label">模块</span></div>
+            <div class="stat-item"><span class="stat-value" style="color:var(--warning);">${overriddenRepos.size}</span><span class="stat-label">已修改</span></div>
             <div class="stat-item"><span class="stat-value" style="color:var(--text-dim);">${this.plan.concurrency}</span><span class="stat-label">并发数</span></div>
             <div class="stat-item"><span class="stat-value" style="color:var(--text-dim);">${this.plan.failure_strategy}</span><span class="stat-label">失败策略</span></div>
         `;
@@ -64,10 +74,12 @@ const VersionConfirmPage = {
         modules.forEach(m => {
             const siloKey = m.silo_name || m.silo_id;
             const repoKey = m.repo_name || m.repo_id;
-            const key = `${siloKey}|||${repoKey}`;
-            if (!grouped[key]) grouped[key] = { silo: siloKey, repo: repoKey, modules: [] };
+            const key = `${siloKey}|||${repoKey}|||${m.repo_id}`;
+            if (!grouped[key]) grouped[key] = { silo: siloKey, repo: repoKey, repoId: m.repo_id, modules: [] };
 
-            const matchesFilter = !filter || m.module_name.toLowerCase().includes(filter.toLowerCase());
+            const matchesFilter = !filter ||
+                m.module_name.toLowerCase().includes(filter.toLowerCase()) ||
+                repoKey.toLowerCase().includes(filter.toLowerCase());
             if (matchesFilter) {
                 grouped[key].modules.push(m);
             }
@@ -80,41 +92,49 @@ const VersionConfirmPage = {
             if (group.modules.length === 0) return;
             const isCollapsed = this.collapsedGroups.has(key);
 
+            // Repo-level version (all modules share the same)
+            const firstMod = group.modules[0];
+            const prevVersion = firstMod.prev_version;
+            const editedVersion = this.editedRepoVersions[group.repoId];
+            const targetVersion = editedVersion !== undefined ? editedVersion : firstMod.target_version;
+            const isOverridden = firstMod.is_overridden || editedVersion !== undefined;
+
             html += `
                 <div class="card" style="padding:0;overflow:hidden;">
                     <div class="group-header" data-group="${key}">
                         <span class="group-toggle ${isCollapsed ? '' : 'open'}">&#9654;</span>
                         <span class="group-name">${group.silo} / ${group.repo}</span>
-                        <span class="group-meta">${group.modules.length} 个模块</span>
+                        <span class="group-meta" style="display:flex;align-items:center;gap:12px;">
+                            <code style="color:var(--text-dim);font-size:12px;">${prevVersion}</code>
+                            <span class="version-arrow">&rarr;</span>
+                            <input class="version-input ${isOverridden ? 'version-overridden' : ''}"
+                                data-repo-id="${group.repoId}"
+                                value="${targetVersion}"
+                                onclick="event.stopPropagation()"
+                                title="修改此仓库的目标版本号">
+                            ${isOverridden ? '<span style="color:var(--warning);font-size:11px;">已修改</span>' : ''}
+                            <span style="color:var(--text-dim);font-size:12px;">${group.modules.length} 模块</span>
+                        </span>
                     </div>
                     <div class="group-body ${isCollapsed ? 'collapsed' : ''}" data-group-body="${key}" ${isCollapsed ? 'style="max-height:0;"' : 'style="max-height:2000px;"'}>
                         <table>
                             <thead><tr>
-                                <th style="width:40%;">模块名称</th>
+                                <th style="width:50%;">模块名称</th>
                                 <th>当前版本</th>
                                 <th></th>
                                 <th>目标版本</th>
-                                <th>状态</th>
                             </tr></thead>
                             <tbody>
             `;
 
             group.modules.forEach(m => {
-                const edited = this.editedVersions[m.module_id];
-                const targetVersion = edited !== undefined ? edited : m.target_version;
-                const isOverridden = m.is_overridden || edited !== undefined;
-
+                const modTarget = editedVersion !== undefined ? editedVersion : m.target_version;
                 html += `
                     <tr>
                         <td style="font-family:var(--mono);font-size:12px;">${m.module_name}</td>
                         <td><code style="color:var(--text-dim);">${m.prev_version}</code></td>
                         <td class="version-arrow">&rarr;</td>
-                        <td>
-                            <input class="version-input ${isOverridden ? 'version-overridden' : ''}"
-                                data-module-id="${m.module_id}"
-                                value="${targetVersion}">
-                        </td>
-                        <td>${isOverridden ? '<span style="color:var(--warning);font-size:11px;">已修改</span>' : '<span style="color:var(--text-dim);font-size:11px;">自动</span>'}</td>
+                        <td><code style="color:${isOverridden ? 'var(--warning)' : 'var(--success)'};">${modTarget}</code></td>
                     </tr>
                 `;
             });
@@ -122,7 +142,7 @@ const VersionConfirmPage = {
             html += '</tbody></table></div></div>';
         });
 
-        groupsContainer.innerHTML = html || '<div class="empty-state"><p class="empty-state-text">没有匹配的模块</p></div>';
+        groupsContainer.innerHTML = html || '<div class="empty-state"><p class="empty-state-text">没有匹配的仓库或模块</p></div>';
     },
 
     _bindEvents(container, planId) {
@@ -134,7 +154,7 @@ const VersionConfirmPage = {
         // Collapse/expand groups
         container.addEventListener('click', (e) => {
             const header = e.target.closest('.group-header');
-            if (!header) return;
+            if (!header || e.target.classList.contains('version-input')) return;
             const key = header.dataset.group;
             const body = container.querySelector(`[data-group-body="${key}"]`);
             const toggle = header.querySelector('.group-toggle');
@@ -152,14 +172,16 @@ const VersionConfirmPage = {
             }
         });
 
-        // Version editing
+        // Version editing at repo level
         container.addEventListener('change', (e) => {
             if (!e.target.classList.contains('version-input')) return;
-            const moduleId = e.target.dataset.moduleId;
+            const repoId = e.target.dataset.repoId;
             const newVersion = e.target.value.trim();
-            if (newVersion) {
-                this.editedVersions[moduleId] = newVersion;
-                e.target.classList.add('version-overridden');
+            if (newVersion && repoId) {
+                this.editedRepoVersions[repoId] = newVersion;
+                // Re-render to update all module rows under this repo
+                const searchVal = container.querySelector('#module-search')?.value?.trim() || '';
+                this._renderAll(searchVal);
             }
         });
 
@@ -170,9 +192,9 @@ const VersionConfirmPage = {
             btn.innerHTML = '<span class="spinner"></span> 确认中...';
 
             try {
-                // Save any edited versions
-                if (Object.keys(this.editedVersions).length > 0) {
-                    await API.updateVersions(planId, this.editedVersions);
+                // Save any edited repo versions (keyed by repo_id)
+                if (Object.keys(this.editedRepoVersions).length > 0) {
+                    await API.updateVersions(planId, this.editedRepoVersions);
                 }
 
                 // Confirm plan

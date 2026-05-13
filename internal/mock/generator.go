@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"gps/internal/model"
 	"math/rand"
-	"strings"
 )
 
 // siloDefs defines 30 silos with business domain names
@@ -54,48 +53,19 @@ var repoTemplates = [][]string{
 	{"core", "adapter"},
 }
 
-// moduleSpec: suffix -> layer assignment within a repo
-// Layer determined by module type suffix (semantic, not positional)
-var moduleSpecs = []struct {
-	suffixes []string // module name suffixes within repo
-}{
-	{[]string{"model", "api"}},
-	{[]string{"model", "api", "service"}},
-	{[]string{"model", "api", "service"}},
-	{[]string{"model", "core"}},
-	{[]string{"common", "client"}},
-	{[]string{"model", "api", "service", "adapter"}},
-	{[]string{"client", "common"}},
-	{[]string{"model", "client", "service"}},
+// moduleSuffixes defines module name suffixes within a repo
+var moduleSuffixes = [][]string{
+	{"model", "api"},
+	{"model", "api", "service"},
+	{"model", "api", "service"},
+	{"model", "core"},
+	{"common", "client"},
+	{"model", "api", "service", "adapter"},
+	{"client", "common"},
+	{"model", "client", "service"},
 }
 
-// suffixToLayer maps module type suffix to a base layer
-// model/common = 0, api/client = 1, core/service = 2, adapter/gateway = 3
-var suffixToLayer = map[string]int{
-	"model":   0,
-	"common":  0,
-	"api":     1,
-	"client":  1,
-	"core":    2,
-	"service": 2,
-	"adapter": 3,
-	"gateway": 3,
-}
-
-// siloLayerBoost: certain "infrastructure" silos get lower layers,
-// "application" silos get higher layers. This creates cross-silo deps.
-var infraSilos = map[string]bool{
-	"auth": true, "config": true, "logging": true,
-	"messaging": true, "monitoring": true,
-}
-var midSilos = map[string]bool{
-	"user": true, "payment": true, "ledger": true,
-	"billing": true, "gateway": true, "scheduler": true,
-}
-
-// highSilos: everything else (order, shipping, analytics, etc.) are high-layer
-
-// GenerateData creates deterministic mock data
+// GenerateData creates deterministic mock data with pure (from, to) edge tuples
 func GenerateData() ([]model.Silo, []model.Repo, []model.Module, []model.DepEdge) {
 	rng := rand.New(rand.NewSource(42))
 
@@ -111,7 +81,6 @@ func GenerateData() ([]model.Silo, []model.Repo, []model.Module, []model.DepEdge
 		}
 		silos = append(silos, silo)
 
-		// Pick 1-3 repos per silo using deterministic template
 		tmplIdx := rng.Intn(len(repoTemplates))
 		repoNames := repoTemplates[tmplIdx]
 		if len(repos) > 40 && len(repoNames) > 1 {
@@ -130,8 +99,8 @@ func GenerateData() ([]model.Silo, []model.Repo, []model.Module, []model.DepEdge
 			}
 			repos = append(repos, repo)
 
-			specIdx := rng.Intn(len(moduleSpecs))
-			suffixes := moduleSpecs[specIdx].suffixes
+			specIdx := rng.Intn(len(moduleSuffixes))
+			suffixes := moduleSuffixes[specIdx]
 			if len(modules) > 85 && len(suffixes) > 2 {
 				suffixes = suffixes[:2]
 			}
@@ -141,28 +110,11 @@ func GenerateData() ([]model.Silo, []model.Repo, []model.Module, []model.DepEdge
 
 			for _, sfx := range suffixes {
 				modName := fmt.Sprintf("%s-%s", repoName, sfx)
-
-				// Compute layer: base from suffix + boost from silo type
-				baseLayer := suffixToLayer[sfx]
-				siloBoost := 0
-				if infraSilos[sd.name] {
-					siloBoost = 0
-				} else if midSilos[sd.name] {
-					siloBoost = 1
-				} else {
-					siloBoost = 2
-				}
-				layer := baseLayer + siloBoost
-				if layer > 4 {
-					layer = 4
-				}
-
 				mod := model.Module{
 					ID:     fmt.Sprintf("mod-%03d", len(modules)+1),
 					RepoID: repo.ID,
 					SiloID: silo.ID,
 					Name:   modName,
-					Layer:  layer,
 				}
 				modules = append(modules, mod)
 			}
@@ -170,135 +122,93 @@ func GenerateData() ([]model.Silo, []model.Repo, []model.Module, []model.DepEdge
 	}
 
 	assignVersions(modules, rng)
-	edges := generateDependencies(modules, rng)
+	edges := generateEdges(modules, rng)
 
 	return silos, repos, modules, edges
 }
 
 func assignVersions(modules []model.Module, rng *rand.Rand) {
+	// Same repo shares the same version (repo-level tag)
+	repoVersions := make(map[string]string)
 	for i := range modules {
-		switch modules[i].Layer {
-		case 0:
-			modules[i].CurrentVersion = fmt.Sprintf("%d.%d.%d", 3+rng.Intn(3), rng.Intn(5), rng.Intn(20)+1)
-		case 1:
-			modules[i].CurrentVersion = fmt.Sprintf("%d.%d.%d", 2+rng.Intn(2), rng.Intn(5), rng.Intn(15)+1)
-		case 2:
-			modules[i].CurrentVersion = fmt.Sprintf("%d.%d.%d", 1+rng.Intn(2), rng.Intn(5), rng.Intn(10)+1)
-		case 3:
-			modules[i].CurrentVersion = fmt.Sprintf("%d.%d.%d", 1, rng.Intn(3), rng.Intn(10)+1)
-		case 4:
-			modules[i].CurrentVersion = fmt.Sprintf("0.%d.%d", 1+rng.Intn(5), rng.Intn(10)+1)
+		rid := modules[i].RepoID
+		if _, ok := repoVersions[rid]; !ok {
+			major := 1 + rng.Intn(4)
+			minor := rng.Intn(6)
+			patch := 1 + rng.Intn(20)
+			repoVersions[rid] = fmt.Sprintf("%d.%d.%d", major, minor, patch)
 		}
+		modules[i].CurrentVersion = repoVersions[rid]
 	}
 }
 
-func generateDependencies(modules []model.Module, rng *rand.Rand) []model.DepEdge {
-	var edges []model.DepEdge
+// generateEdges produces pure (from, to) dependency tuples.
+// DAG is guaranteed by only allowing edges from lower-index modules to higher-index modules.
+func generateEdges(modules []model.Module, rng *rand.Rand) []model.DepEdge {
+	n := len(modules)
 	edgeSet := make(map[string]bool)
+	var edges []model.DepEdge
 
-	// Build module index
-	modIndex := make(map[string]int) // id -> index
-	for i, m := range modules {
-		modIndex[m.ID] = i
-	}
-
-	// addEdge enforces DAG: from.Layer <= to.Layer, and if same layer, from.index < to.index
-	addEdge := func(fromID, toID string) {
-		if fromID == toID {
+	addEdge := func(fromIdx, toIdx int) {
+		if fromIdx == toIdx || fromIdx >= n || toIdx >= n {
 			return
 		}
-		fi, ti := modIndex[fromID], modIndex[toID]
-		fLayer, tLayer := modules[fi].Layer, modules[ti].Layer
-		// Strict: from layer must be < to layer, OR same layer but from has lower global index
-		if fLayer > tLayer {
+		// Enforce DAG: from must have lower index than to
+		if fromIdx > toIdx {
 			return
 		}
-		if fLayer == tLayer && fi >= ti {
-			return
-		}
-		key := fromID + "->" + toID
+		key := modules[fromIdx].ID + "->" + modules[toIdx].ID
 		if !edgeSet[key] {
-			edges = append(edges, model.DepEdge{From: fromID, To: toID})
+			edges = append(edges, model.DepEdge{From: modules[fromIdx].ID, To: modules[toIdx].ID})
 			edgeSet[key] = true
 		}
 	}
 
-	// Group modules by layer
-	layerModules := make(map[int][]int)
-	for i, m := range modules {
-		layerModules[m.Layer] = append(layerModules[m.Layer], i)
-	}
-
-	// Group modules by repo for intra-repo deps
-	repoModules := make(map[string][]int)
-	for i, m := range modules {
-		repoModules[m.RepoID] = append(repoModules[m.RepoID], i)
-	}
-
-	// 1. Intra-repo chain: model -> api -> service -> adapter within same repo
-	for _, indices := range repoModules {
-		for j := 1; j < len(indices); j++ {
-			addEdge(modules[indices[j-1]].ID, modules[indices[j]].ID)
+	// 1. Each module (except the first ~15%) has a 40% chance of depending on
+	//    a random earlier module. This creates the basic DAG structure.
+	for i := 1; i < n; i++ {
+		if rng.Intn(100) < 40 {
+			dep := rng.Intn(i) // pick a random module before this one
+			addEdge(dep, i)
 		}
 	}
 
-	// 2. Cross-layer dependencies: each module in L1+ depends on 1-2 modules from strictly lower layers
-	for layer := 1; layer <= 4; layer++ {
-		for _, idx := range layerModules[layer] {
-			var candidates []int
-			for l := 0; l < layer; l++ {
-				candidates = append(candidates, layerModules[l]...)
-			}
-			if len(candidates) == 0 {
-				continue
-			}
-
-			numDeps := 1 + rng.Intn(2)
-			if numDeps > len(candidates) {
-				numDeps = len(candidates)
-			}
-
-			perm := rng.Perm(len(candidates))
-			for d := 0; d < numDeps; d++ {
-				addEdge(modules[candidates[perm[d]]].ID, modules[idx].ID)
+	// 2. Create some "hub" modules that many others depend on (simulates
+	//    shared libraries like auth-common, config-model, messaging-api).
+	//    Pick ~5 modules from the first 20% as hubs.
+	hubCount := 5
+	firstChunk := n * 20 / 100
+	if firstChunk < hubCount {
+		firstChunk = hubCount
+	}
+	hubs := rng.Perm(firstChunk)
+	if len(hubs) > hubCount {
+		hubs = hubs[:hubCount]
+	}
+	for _, hubIdx := range hubs {
+		// ~25% of modules after this hub depend on it
+		for j := hubIdx + 1; j < n; j++ {
+			if rng.Intn(100) < 25 {
+				addEdge(hubIdx, j)
 			}
 		}
 	}
 
-	// 3. Cross-silo infrastructure deps
-	var infraModIDs []string
-	for _, m := range modules {
-		siloName := ""
-		for _, s := range siloDefs {
-			if strings.HasPrefix(m.Name, s.name+"-") {
-				siloName = s.name
+	// 3. Ensure at least some connectivity: every module beyond index 5
+	//    that has zero in-edges gets one random dependency on an earlier module.
+	inDeg := make([]int, n)
+	for _, e := range edges {
+		for j, m := range modules {
+			if m.ID == e.To {
+				inDeg[j]++
 				break
 			}
 		}
-		if infraSilos[siloName] && m.Layer <= 1 {
-			infraModIDs = append(infraModIDs, m.ID)
-		}
 	}
-
-	if len(infraModIDs) > 0 {
-		for _, m := range modules {
-			siloName := ""
-			for _, s := range siloDefs {
-				if strings.HasPrefix(m.Name, s.name+"-") {
-					siloName = s.name
-					break
-				}
-			}
-			if infraSilos[siloName] {
-				continue
-			}
-			if m.Layer < 2 {
-				continue
-			}
-			if rng.Intn(100) < 30 {
-				pick := infraModIDs[rng.Intn(len(infraModIDs))]
-				addEdge(pick, m.ID)
-			}
+	for i := 5; i < n; i++ {
+		if inDeg[i] == 0 {
+			dep := rng.Intn(i)
+			addEdge(dep, i)
 		}
 	}
 

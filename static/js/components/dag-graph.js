@@ -1,16 +1,17 @@
-// DAG Graph component using SVG (no D3 dependency)
+// DAG Graph component using SVG — layout computed from edges, no external layer info
 class DagGraph {
     constructor(container) {
         this.container = container;
-        this.nodes = [];
         this.edges = [];
         this.moduleMap = {};
         this.selectedNodeId = null;
         this.onNodeClick = null;
+        this.statusMap = {};
+        this.positions = {};
 
         // Adjacency for neighbor highlight
-        this.upstreamOf = {};   // id -> Set of parent ids (from -> to means from is upstream of to)
-        this.downstreamOf = {}; // id -> Set of child ids
+        this.upstreamOf = {};
+        this.downstreamOf = {};
 
         // Layout params
         this.nodeW = 120;
@@ -37,10 +38,6 @@ class DagGraph {
                         markerWidth="8" markerHeight="6" orient="auto">
                         <polygon points="0 0, 10 3.5, 0 7" fill="#4a4e5c"/>
                     </marker>
-                    <marker id="arrowhead-hl" viewBox="0 0 10 7" refX="10" refY="3.5"
-                        markerWidth="8" markerHeight="6" orient="auto">
-                        <polygon points="0 0, 10 3.5, 0 7" fill="#4f6ef7"/>
-                    </marker>
                     <marker id="arrowhead-up" viewBox="0 0 10 7" refX="10" refY="3.5"
                         markerWidth="8" markerHeight="6" orient="auto">
                         <polygon points="0 0, 10 3.5, 0 7" fill="#f59e0b"/>
@@ -62,12 +59,10 @@ class DagGraph {
         this.svg = this.container.querySelector('#dag-svg');
         this.root = this.container.querySelector('#dag-root');
 
-        // Zoom controls
         this.container.querySelector('#dag-zoom-in').onclick = () => this._zoom(1.2);
         this.container.querySelector('#dag-zoom-out').onclick = () => this._zoom(0.8);
         this.container.querySelector('#dag-zoom-reset').onclick = () => this._resetView();
 
-        // Pan with mouse
         this.svg.addEventListener('mousedown', (e) => {
             if (e.target === this.svg || e.target === this.root) {
                 this.isDragging = true;
@@ -77,10 +72,8 @@ class DagGraph {
         });
         window.addEventListener('mousemove', (e) => {
             if (!this.isDragging) return;
-            const dx = e.clientX - this.lastMouse.x;
-            const dy = e.clientY - this.lastMouse.y;
-            this.translateX += dx;
-            this.translateY += dy;
+            this.translateX += e.clientX - this.lastMouse.x;
+            this.translateY += e.clientY - this.lastMouse.y;
             this.lastMouse = { x: e.clientX, y: e.clientY };
             this._applyTransform();
         });
@@ -88,12 +81,9 @@ class DagGraph {
             this.isDragging = false;
             this.svg.style.cursor = 'default';
         });
-
-        // Zoom with wheel
         this.svg.addEventListener('wheel', (e) => {
             e.preventDefault();
-            const factor = e.deltaY < 0 ? 1.1 : 0.9;
-            this._zoom(factor);
+            this._zoom(e.deltaY < 0 ? 1.1 : 0.9);
         }, { passive: false });
     }
 
@@ -115,6 +105,8 @@ class DagGraph {
             `translate(${this.translateX},${this.translateY}) scale(${this.scale})`);
     }
 
+    // --- Public API ---
+
     setData(modules, edges, moduleStatusMap) {
         this.moduleMap = {};
         modules.forEach(m => { this.moduleMap[m.module_id || m.id] = m; });
@@ -129,8 +121,6 @@ class DagGraph {
             this.downstreamOf[id] = new Set();
         }
         for (const e of this.edges) {
-            // edge: from is depended-upon, to depends on from
-            // so from is upstream of to, to is downstream of from
             if (this.downstreamOf[e.from]) this.downstreamOf[e.from].add(e.to);
             if (this.upstreamOf[e.to]) this.upstreamOf[e.to].add(e.from);
         }
@@ -140,37 +130,70 @@ class DagGraph {
         setTimeout(() => this._fitToView(), 50);
     }
 
-    // Get the 1-hop neighborhood highlight sets for a selected node
-    _getNeighborhood(nodeId) {
-        if (!nodeId) return { selected: null, upstream: new Set(), downstream: new Set(), edgeKeys: new Set() };
-        const upstream = this.upstreamOf[nodeId] || new Set();
-        const downstream = this.downstreamOf[nodeId] || new Set();
-        // Collect highlighted edge keys
-        const edgeKeys = new Set();
-        for (const uid of upstream) {
-            edgeKeys.add(uid + '->' + nodeId);
+    updateStatus(moduleId, status) {
+        this.statusMap[moduleId] = status;
+        this._render();
+    }
+
+    selectNode(moduleId) {
+        this.selectedNodeId = moduleId;
+        this._render();
+    }
+
+    // --- Layout: compute depth from edges (longest path from roots) ---
+
+    _computeDepths() {
+        const ids = Object.keys(this.moduleMap);
+        const depth = {};
+        const inDeg = {};
+        const adj = {};  // from -> [to]
+
+        for (const id of ids) {
+            depth[id] = 0;
+            inDeg[id] = 0;
+            adj[id] = [];
         }
-        for (const did of downstream) {
-            edgeKeys.add(nodeId + '->' + did);
+        for (const e of this.edges) {
+            if (adj[e.from] && inDeg[e.to] !== undefined) {
+                adj[e.from].push(e.to);
+                inDeg[e.to]++;
+            }
         }
-        return { selected: nodeId, upstream, downstream, edgeKeys };
+
+        // Kahn's algorithm with longest-path propagation
+        const queue = [];
+        for (const id of ids) {
+            if (inDeg[id] === 0) queue.push(id);
+        }
+
+        while (queue.length > 0) {
+            const node = queue.shift();
+            for (const next of adj[node]) {
+                depth[next] = Math.max(depth[next], depth[node] + 1);
+                inDeg[next]--;
+                if (inDeg[next] === 0) queue.push(next);
+            }
+        }
+
+        return depth;
     }
 
     _layout() {
-        // Group by layer
+        const depth = this._computeDepths();
+
+        // Group nodes by computed depth
         const layers = {};
-        Object.values(this.moduleMap).forEach(m => {
-            const layer = m.layer !== undefined ? m.layer : 0;
-            if (!layers[layer]) layers[layer] = [];
-            layers[layer].push(m.module_id || m.id);
-        });
+        for (const [id, d] of Object.entries(depth)) {
+            if (!layers[d]) layers[d] = [];
+            layers[d].push(id);
+        }
 
         const layerKeys = Object.keys(layers).map(Number).sort((a, b) => a - b);
         if (layerKeys.length === 0) return;
 
         this.positions = {};
-        layerKeys.forEach((layerIdx, li) => {
-            const ids = layers[layerIdx];
+        layerKeys.forEach((layerVal, li) => {
+            const ids = layers[layerVal];
             const totalW = ids.length * (this.nodeW + this.nodeGapX) - this.nodeGapX;
             const startX = -totalW / 2 + this.nodeW / 2;
             ids.forEach((id, ni) => {
@@ -182,6 +205,20 @@ class DagGraph {
         });
     }
 
+    // --- Neighbor highlight ---
+
+    _getNeighborhood(nodeId) {
+        if (!nodeId) return { selected: null, upstream: new Set(), downstream: new Set(), edgeKeys: new Set() };
+        const upstream = this.upstreamOf[nodeId] || new Set();
+        const downstream = this.downstreamOf[nodeId] || new Set();
+        const edgeKeys = new Set();
+        for (const uid of upstream) edgeKeys.add(uid + '->' + nodeId);
+        for (const did of downstream) edgeKeys.add(nodeId + '->' + did);
+        return { selected: nodeId, upstream, downstream, edgeKeys };
+    }
+
+    // --- Rendering ---
+
     _render() {
         if (!this.root) return;
         this.root.innerHTML = '';
@@ -189,17 +226,13 @@ class DagGraph {
         const nb = this._getNeighborhood(this.selectedNodeId);
         const hasSelection = !!nb.selected;
 
-        // Render edges (unhighlighted first, then highlighted on top)
+        // Separate edges into normal and highlighted
         const hlEdges = [];
         const normalEdges = [];
-        this.edges.forEach(e => {
+        for (const e of this.edges) {
             const key = e.from + '->' + e.to;
-            if (nb.edgeKeys.has(key)) {
-                hlEdges.push(e);
-            } else {
-                normalEdges.push(e);
-            }
-        });
+            (nb.edgeKeys.has(key) ? hlEdges : normalEdges).push(e);
+        }
 
         // Draw normal edges
         for (const e of normalEdges) {
@@ -227,9 +260,9 @@ class DagGraph {
         }
 
         // Render nodes
-        Object.entries(this.positions).forEach(([id, pos]) => {
+        for (const [id, pos] of Object.entries(this.positions)) {
             const m = this.moduleMap[id];
-            if (!m) return;
+            if (!m) continue;
 
             const isSelected = id === nb.selected;
             const isUpstream = nb.upstream.has(id);
@@ -239,11 +272,7 @@ class DagGraph {
             const status = this.statusMap[id] || m.status || 'PENDING';
             const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
             g.setAttribute('transform', `translate(${pos.x},${pos.y})`);
-
-            // Dim unrelated nodes when something is selected
-            if (hasSelection && !isNeighbor) {
-                g.setAttribute('opacity', '0.25');
-            }
+            if (hasSelection && !isNeighbor) g.setAttribute('opacity', '0.25');
 
             const colors = this._statusColors(status);
             const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -255,7 +284,6 @@ class DagGraph {
             rect.setAttribute('stroke', colors.stroke);
             rect.setAttribute('stroke-width', '1.5');
 
-            // Special styling for selected / upstream / downstream
             if (isSelected) {
                 rect.setAttribute('stroke', '#4f6ef7');
                 rect.setAttribute('stroke-width', '3');
@@ -270,30 +298,31 @@ class DagGraph {
                 rect.setAttribute('filter', 'drop-shadow(0 0 6px rgba(6,182,212,0.5))');
             }
 
-            const name = (m.module_name || m.name || id).replace(/.*-/, '').substring(0, 14);
+            const label = (m.module_name || m.name || id);
+            // Show last 2 segments of name for readability
+            const parts = label.split('-');
+            const shortName = parts.length > 2 ? parts.slice(-2).join('-') : label;
             const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
             text.setAttribute('x', this.nodeW / 2);
             text.setAttribute('y', this.nodeH / 2 + 4);
             text.setAttribute('text-anchor', 'middle');
             text.setAttribute('fill', colors.text);
-            text.textContent = name;
+            text.setAttribute('font-size', '10');
+            text.textContent = shortName.substring(0, 16);
 
             g.appendChild(rect);
             g.appendChild(text);
 
-            // Upstream/downstream indicator label
+            // Upstream/downstream indicator
             if (isUpstream) {
-                const label = this._createIndicatorLabel('上游', '#f59e0b', pos);
-                g.appendChild(label);
+                g.appendChild(this._createTag('上游', '#f59e0b'));
             } else if (isDownstream) {
-                const label = this._createIndicatorLabel('下游', '#06b6d4', pos);
-                g.appendChild(label);
+                g.appendChild(this._createTag('下游', '#06b6d4'));
             }
 
             g.style.cursor = 'pointer';
             g.addEventListener('click', (evt) => {
                 evt.stopPropagation();
-                // Toggle: click same node again to deselect
                 if (this.selectedNodeId === id) {
                     this.selectedNodeId = null;
                 } else {
@@ -303,15 +332,14 @@ class DagGraph {
                 if (this.onNodeClick) this.onNodeClick(this.selectedNodeId, this.selectedNodeId ? m : null);
             });
 
-            // Pulse animation for releasing nodes
             if (status === 'RELEASING' || status === 'RETRYING') {
                 rect.style.animation = 'pulse 1.5s infinite';
             }
 
             this.root.appendChild(g);
-        });
+        }
 
-        // Click on empty space to deselect
+        // Click empty space to deselect
         this.svg.onclick = (evt) => {
             if (evt.target === this.svg || evt.target === this.root) {
                 if (this.selectedNodeId) {
@@ -332,8 +360,8 @@ class DagGraph {
         const y1 = fromPos.y + this.nodeH;
         const x2 = toPos.x + this.nodeW / 2;
         const y2 = toPos.y;
-
         const midY = (y1 + y2) / 2;
+
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.setAttribute('d', `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`);
         path.setAttribute('class', 'dag-edge');
@@ -341,16 +369,16 @@ class DagGraph {
         return path;
     }
 
-    _createIndicatorLabel(text, color, pos) {
-        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        label.setAttribute('x', this.nodeW / 2);
-        label.setAttribute('y', -6);
-        label.setAttribute('text-anchor', 'middle');
-        label.setAttribute('fill', color);
-        label.setAttribute('font-size', '9');
-        label.setAttribute('font-weight', '700');
-        label.textContent = text;
-        return label;
+    _createTag(text, color) {
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', this.nodeW / 2);
+        t.setAttribute('y', -6);
+        t.setAttribute('text-anchor', 'middle');
+        t.setAttribute('fill', color);
+        t.setAttribute('font-size', '9');
+        t.setAttribute('font-weight', '700');
+        t.textContent = text;
+        return t;
     }
 
     _statusColors(status) {
@@ -372,33 +400,18 @@ class DagGraph {
         if (svgRect.width === 0 || svgRect.height === 0) return;
 
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        Object.values(this.positions).forEach(p => {
+        for (const p of Object.values(this.positions)) {
             minX = Math.min(minX, p.x);
             minY = Math.min(minY, p.y);
             maxX = Math.max(maxX, p.x + this.nodeW);
             maxY = Math.max(maxY, p.y + this.nodeH);
-        });
+        }
 
         const graphW = maxX - minX + this.padding * 2;
         const graphH = maxY - minY + this.padding * 2;
-
-        this.scale = Math.min(
-            svgRect.width / graphW,
-            svgRect.height / graphH,
-            1.5
-        );
+        this.scale = Math.min(svgRect.width / graphW, svgRect.height / graphH, 1.5);
         this.translateX = (svgRect.width - graphW * this.scale) / 2 - minX * this.scale + this.padding * this.scale;
         this.translateY = (svgRect.height - graphH * this.scale) / 2 - minY * this.scale + this.padding * this.scale;
         this._applyTransform();
-    }
-
-    updateStatus(moduleId, status) {
-        this.statusMap[moduleId] = status;
-        this._render();
-    }
-
-    selectNode(moduleId) {
-        this.selectedNodeId = moduleId;
-        this._render();
     }
 }

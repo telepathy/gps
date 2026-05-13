@@ -48,6 +48,7 @@ const API = {
     executePlan(planId) { return this.post(`/api/plans/${planId}/execute`); },
     getProgress(planId) { return this.get(`/api/plans/${planId}/progress`); },
     abortPlan(planId) { return this.post(`/api/plans/${planId}/abort`); },
+    retryModule(planId, moduleId) { return this.post(`/api/plans/${planId}/modules/${moduleId}/retry`); },
 
     // SSE
     subscribeEvents(planId, onEvent) {
