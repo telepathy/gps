@@ -104,20 +104,28 @@ Root
 ```
 Phase 0: 发版准备 (Pre-Release Configuration)
   ├── 0a. 从 PTIS 获取产品树信息（代码库位置、发布分支）
-  ├── 0b. 确定每个模块拟发布版本号（自动递增 + 人工确认）
-  └── 0c. 配置 DMS 依赖分支
+  ├── 0b. 确定每个仓库拟发布版本号（自动递增 + 人工确认）
+  └── 0c. 指定本次发布使用的 akasha (DMS) 依赖分支
 
-Phase 1: 打 Tag (Tagging)
-  └── 对所有代码库的发布分支，打上拟发布的版本 tag
+Phase 1: 打 Tag — 统一冻结源码快照 (Tagging)
+  └── 对全部启用 devops 的代码库，在发布分支上统一打一组新版本 tag，冻结本次源码；
+       后续分析与发布均以这组 tag 为准
 
 Phase 2: 依赖分析与拓扑排序 (Dependency Resolution & Topological Sort)
-  ├── 2a. 调用 DAS API，获取本次发布范围内模块的依赖关系
-  └── 2b. 对依赖图进行拓扑排序，生成全序发布序列
+  ├── 2a. 调用 DAS，基于本次 tag 的源码获取归一化的模块级 GA→GA 依赖边
+  ├── 2b. 按 GA 归类节点：internal / pending-external / third-party
+  ├── 2c. 拓扑排序，生成全序发布序列
+  └── 2d. 模块级环检测：若存在环则中止发布并定位环路径
+
+Phase 2.5: 外部依赖确认 (Pending-External Gate)
+  └── 列出 pending-external 节点（自研但未 devops 的依赖），人工确认其已以正确版本
+       存在于指定的 akasha 分支；确认后置为"已满足上游"，放行其下游
 
 Phase 3: 并发池发布 (Concurrent Pool Release)
-  └── 维护一个固定大小的并发池，按拓扑序逐个取出模块，若其上游依赖已全部完成则投入池中执行，
+  └── 维护固定大小的并发池，按拓扑序逐个取出模块，若其上游依赖已全部完成则投入池中执行，
        池满时阻塞等待。所有模块处理完毕后结束。
-       └── 每个模块发布完成后，更新 DMS 中的版本信息
+       └── 单模块发布：从 akasha 拉依赖清单注入构建 → checkout tag 构建/测试/发布
+            → published 模块回写 akasha 新版本 → 解锁下游
 
 Phase 4: 发布完成 (Post-Release)
   ├── 记录发布日志
