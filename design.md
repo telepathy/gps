@@ -284,6 +284,10 @@ ReleaseOrchestrator.execute(planRequest):
 | 执行发布 | 对指定 plan_id 开始执行发布流程（异步），返回 RUNNING 状态 |
 | 查询发布进度 | 查询指定 plan 的当前执行阶段、各模块状态和完成进度 |
 | 查询发布结果 | 查询指定 plan 的最终发布结果和汇总统计 |
+| 查询全量仓库 | `GET /api/repos`，返回所有仓库（含所属竖井名与当前用户的 `can_edit` 标记），仅需登录 |
+| 配置仓库发布分支 | `PUT /api/repos/:id/branch`，需 `release` 动作 + 该仓库所属竖井在用户授权范围内 |
+
+> 用户认证、当前用户、登出、用户/角色管理等接口见第 10.4 节。所有发布相关接口均需登录，写操作按角色与竖井范围鉴权。
 
 ---
 
@@ -323,6 +327,112 @@ GPS 默认使用语义化版本 (SemVer)，自动递增规则：
 
 GPS 与各外部系统通信时需携带认证信息 (API Token / SSH Key)，建议通过环境变量或密钥管理服务 (Vault) 注入。
 
+GPS 自身的用户认证与权限模型见第 10 章。
+
+---
+
+## 10. 用户系统与 RBAC
+
+GPS 的用户身份来自一个**自签名 GitLab 实例的 SSO**，GPS 只读取 GitLab 用户名作为唯一身份标识；权限控制（RBAC）完全由 GPS 内部维护，与 GitLab 的组织/项目权限解耦。
+
+### 10.1 认证流程 (GitLab OAuth2)
+
+```
+浏览器 → GET /auth/login                 # 登录页：GitLab 按钮 + 内置账号表单
+       → GET {gitlab}/oauth/authorize    # 跳转 GitLab 授权 (scope=read_user)
+GitLab → GET /auth/gitlab/callback?code  # 授权回调
+GPS    → POST {gitlab}/oauth/token       # code 换 access_token
+       → GET  {gitlab}/api/v4/user       # 取用户信息，仅消费 username
+       → 签发 JWT，写入 HttpOnly Cookie，302 回首页
+```
+
+- **自签名证书**：GitLab 为内网自签名实例，GPS 的 OAuth HTTP 客户端 (resty) 配置 `InsecureSkipVerify: true` 跳过 TLS 证书校验。
+- **只读用户名**：GPS 仅从 `/api/v4/user` 取 `username`（email/avatar 仅用于展示）；首次登录的 GitLab 用户自动建档并赋予 `viewer` 角色，再次登录保留既有角色与竖井范围。
+- **会话**：HS256 JWT（claims: `user_id`/`username`/`exp` 24h），写入 HttpOnly Cookie。请求时从 `Authorization: Bearer` 或 Cookie 读取。同源 SSE 自动携带 Cookie。
+- **冷启动 / Mock 登录**：系统内置一个 `admin` 账号（`allowed_silos="*"`）。`POST /auth/mock-login` 支持以用户名直接登录已存在用户，无需 GitLab，用于初始化与无 SSO 环境的调试。未配置 GitLab 时登录页仅展示内置账号表单。
+
+### 10.2 角色与权限
+
+GPS 采用「角色 → 动作」+「用户 → 竖井范围」两级模型。
+
+**动作 (Action)**
+
+| 动作 | 含义 |
+|------|------|
+| `view` | 查看（计划列表/详情、进度、历史、SSE） |
+| `create` | 创建发版计划 |
+| `release` | 确认计划、修改版本、执行/中止/重试发版 |
+| `manage` | 用户与角色管理 |
+
+**内置角色 (Role)**
+
+| 角色 | 动作 | 说明 |
+|------|------|------|
+| `admin` | view + create + release + manage | 管理员，跳过竖井范围限制 |
+| `releaser` | view + create + release | 发布者，仅在授权竖井范围内可写 |
+| `viewer` | view | 观察者，只读（新用户默认） |
+
+**竖井范围 (allowed_silos)**
+
+用户级字段，控制可操作的竖井：`"*"` = 全部，`""` = 无，或逗号分隔的 silo_id 列表（如 `silo-001,silo-002`）。`admin` 与 `allowed_silos="*"` 跳过该校验。
+
+### 10.3 鉴权点
+
+- 所有 `/api/*` 接口经 `RequireAuth` 中间件，未携带有效 JWT 返回 401（前端据此跳转登录页）。
+- 写操作叠加校验：
+  - 创建计划 → 需 `create` 动作 + 目标竖井在用户授权范围内。
+  - 确认 / 改版本 / 执行 / 中止 / 重试 → 需 `release` 动作 + 计划涉及的全部竖井在授权范围内。
+- 用户管理接口 (`/api/admin/*`) → 需 `manage` 动作。
+- 读操作仅需登录。
+
+### 10.4 用户系统 API
+
+| Method | Path | 鉴权 | 用途 |
+|--------|------|------|------|
+| GET | /auth/login | 公开 | 登录页 |
+| POST | /auth/mock-login | 公开 | 内置账号 / 用户名登录 |
+| GET | /auth/gitlab/callback | 公开 | GitLab OAuth 回调 |
+| GET | /api/current-user | 登录 | 当前用户（含角色） |
+| POST | /api/logout | 登录 | 登出（清 Cookie） |
+| GET | /api/admin/users | manage | 用户列表 |
+| GET | /api/admin/roles | manage | 角色列表 |
+| POST | /api/admin/users/import | manage | 批量预注册用户 |
+| PUT | /api/admin/users/:uid/roles | manage | 设置用户角色 |
+| PUT | /api/admin/users/:uid/access | manage | 设置用户竖井范围 |
+
+### 10.5 用户导入 (预注册 + SSO 绑定)
+
+身份始终由 GitLab SSO 管理，GPS 不存储任何密码。管理员可**批量预注册用户名**，用于在用户首次登录前预先分配角色与竖井范围。
+
+```
+POST /api/admin/users/import
+{
+  "users": [
+    { "username": "zhangsan" },
+    { "username": "lisi", "roles": ["releaser"], "allowed_silos": "silo-001,silo-002" },
+    { "username": "wangwu", "roles": ["viewer"] }
+  ]
+}
+→ { "created": [...], "skipped": [...], "failed": { "username": "reason" } }
+```
+
+- **预注册状态**：导入的用户 `GitlabID=0`，仅占位用户名与权限，尚未真正登录。
+- **SSO 绑定**：该用户首次通过 GitLab 登录时，`FindOrCreateUser` 按 username 匹配到预注册记录，绑定 GitLab 信息（id / email / avatar），并**保留导入时设置的角色与竖井范围**；未预注册的用户按新用户处理，赋予 `viewer`。
+- **幂等**：用户名已存在则跳过（不覆盖既有角色）；`roles` 为空默认 `viewer`；未知角色名拒绝并计入 `failed`。
+
+### 10.6 配置 (环境变量)
+
+| 变量 | 说明 |
+|------|------|
+| `GPS_JWT_SECRET` | JWT 签名密钥；未设置则生成临时密钥（重启后会话失效） |
+| `GPS_GITLAB_URL` | GitLab 实例地址，如 `https://gitlab.internal.com` |
+| `GPS_GITLAB_APP_ID` | OAuth 应用 ID；设置后启用 GitLab SSO |
+| `GPS_GITLAB_APP_SECRET` | OAuth 应用密钥 |
+| `GPS_GITLAB_CALLBACK_URL` | 回调地址，指向 `/auth/gitlab/callback` |
+| `GPS_DALARAN_URL` | dalaran 地址（**必填**）；从其 `GET /api/v1/silos` 加载竖井/仓库；未配置或拉取失败则启动失败退出 |
+
+> 当前原型用户/角色数据存于内存（重启丢失），与第 6 章「内部数据结构」一致；未来可平移至关系库（`user` / `role` / `user_roles` 三表）。
+
 ---
 
 ## 11. UI 设计
@@ -340,6 +450,12 @@ GPS Web 控制台提供发版全流程的可视化操作与监控。
 
 ### 11.4 发布历史页
 列表展示历史发布记录（时间、竖井、涉及模块数、成功/失败统计）。点击进入详情页，查看完整的发布结果、各模块耗时、失败原因。支持导出发布报告。
+
+### 11.5 仓库管理页
+扁平表格列出全量仓库（仅展示 dalaran 中 `devopsOpt=true` 的仓库），四列：竖井代码、仓库名、发布分支、操作。任意登录用户可查看，顶部提供竖井代码过滤框做即时筛选。仓库名为链接，点击在新窗口打开其网页地址（由 SSH 地址转换：去 `ssh://`/`git@` 前缀与端口、去 `.git` 后缀、改为 `https://`）。对所属竖井在用户授权范围内的仓库，可就地编辑并保存其发布分支（`release_branch`）；无权限的仓库分支只读并标注「无权限」。编辑权限由后端 `can_edit` 标记驱动，写入时再做一次竖井范围硬校验。
+
+### 11.6 权限管理页
+仅 `admin` 可见。顶部提供「导入用户」区，可批量粘贴用户名（每行一个，支持 `用户名,角色,竖井` 格式）预注册用户——身份仍由 GitLab SSO 管理，用户首次登录时自动绑定并保留此处设置的角色。下方表格列出全部用户，支持勾选角色、编辑竖井访问范围（`allowed_silos`）并保存。导航栏右侧常驻用户区（头像/用户名/角色/登出）。未登录访问任何页面自动跳转登录页。
 
 ---
 

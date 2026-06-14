@@ -6,54 +6,8 @@ import (
 	"math/rand"
 )
 
-// siloDefs defines 30 silos with business domain names
-var siloDefs = []struct {
-	name string
-	desc string
-}{
-	{"payment", "支付核心服务"},
-	{"trading", "交易引擎"},
-	{"risk", "风控系统"},
-	{"settlement", "清结算"},
-	{"user", "用户中心"},
-	{"merchant", "商户管理"},
-	{"notification", "通知服务"},
-	{"reporting", "报表系统"},
-	{"compliance", "合规审计"},
-	{"gateway", "网关服务"},
-	{"billing", "计费系统"},
-	{"ledger", "账本服务"},
-	{"pricing", "定价引擎"},
-	{"catalog", "商品目录"},
-	{"inventory", "库存管理"},
-	{"order", "订单系统"},
-	{"shipping", "物流服务"},
-	{"returns", "退货管理"},
-	{"loyalty", "积分系统"},
-	{"analytics", "数据分析"},
-	{"search", "搜索服务"},
-	{"recommendation", "推荐引擎"},
-	{"auth", "认证授权"},
-	{"config", "配置中心"},
-	{"monitoring", "监控系统"},
-	{"logging", "日志平台"},
-	{"messaging", "消息队列"},
-	{"scheduler", "任务调度"},
-	{"workflow", "工作流引擎"},
-	{"audit", "审计追踪"},
-}
-
-// repoTemplates defines how repos are structured within a silo
-var repoTemplates = [][]string{
-	{"core"},
-	{"core", "gateway"},
-	{"core", "api"},
-	{"service"},
-	{"service", "common"},
-	{"core", "adapter"},
-}
-
-// moduleSuffixes defines module name suffixes within a repo
+// moduleSuffixes defines module name suffixes within a repo. Silo and repo data
+// come from dalaran; only modules and the dependency graph are synthesized here.
 var moduleSuffixes = [][]string{
 	{"model", "api"},
 	{"model", "api", "service"},
@@ -65,66 +19,32 @@ var moduleSuffixes = [][]string{
 	{"model", "client", "service"},
 }
 
-// GenerateData creates deterministic mock data with pure (from, to) edge tuples
-func GenerateData() ([]model.Silo, []model.Repo, []model.Module, []model.DepEdge) {
+// GenerateModulesForRepos deterministically synthesizes the module set and the
+// dependency DAG for a list of repos (sourced from dalaran). Module info from
+// dalaran is intentionally not used — GPS owns the module-level release graph.
+func GenerateModulesForRepos(repos []model.Repo) ([]model.Module, []model.DepEdge) {
 	rng := rand.New(rand.NewSource(42))
 
-	var silos []model.Silo
-	var repos []model.Repo
 	var modules []model.Module
+	for _, repo := range repos {
+		specIdx := rng.Intn(len(moduleSuffixes))
+		suffixes := moduleSuffixes[specIdx]
 
-	for i, sd := range siloDefs {
-		silo := model.Silo{
-			ID:   fmt.Sprintf("silo-%03d", i+1),
-			Name: sd.name,
-			Desc: sd.desc,
-		}
-		silos = append(silos, silo)
-
-		tmplIdx := rng.Intn(len(repoTemplates))
-		repoNames := repoTemplates[tmplIdx]
-		if len(repos) > 40 && len(repoNames) > 1 {
-			repoNames = repoNames[:1]
-		}
-
-		for _, rn := range repoNames {
-			repoName := fmt.Sprintf("%s-%s", sd.name, rn)
-			branches := []string{"release/2025Q2", "release/2025Q3", "main", "develop"}
-			repo := model.Repo{
-				ID:            fmt.Sprintf("repo-%03d", len(repos)+1),
-				SiloID:        silo.ID,
-				Name:          repoName,
-				URL:           fmt.Sprintf("git@gitlab.internal.com:platform/%s.git", repoName),
-				ReleaseBranch: branches[rng.Intn(len(branches))],
+		for _, sfx := range suffixes {
+			modName := fmt.Sprintf("%s-%s", repo.Name, sfx)
+			mod := model.Module{
+				ID:     fmt.Sprintf("mod-%03d", len(modules)+1),
+				RepoID: repo.ID,
+				SiloID: repo.SiloID,
+				Name:   modName,
 			}
-			repos = append(repos, repo)
-
-			specIdx := rng.Intn(len(moduleSuffixes))
-			suffixes := moduleSuffixes[specIdx]
-			if len(modules) > 85 && len(suffixes) > 2 {
-				suffixes = suffixes[:2]
-			}
-			if len(modules) > 95 {
-				suffixes = suffixes[:1]
-			}
-
-			for _, sfx := range suffixes {
-				modName := fmt.Sprintf("%s-%s", repoName, sfx)
-				mod := model.Module{
-					ID:     fmt.Sprintf("mod-%03d", len(modules)+1),
-					RepoID: repo.ID,
-					SiloID: silo.ID,
-					Name:   modName,
-				}
-				modules = append(modules, mod)
-			}
+			modules = append(modules, mod)
 		}
 	}
 
 	assignVersions(modules, rng)
 	edges := generateEdges(modules, rng)
-
-	return silos, repos, modules, edges
+	return modules, edges
 }
 
 func assignVersions(modules []model.Module, rng *rand.Rand) {

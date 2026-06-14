@@ -28,6 +28,19 @@ type Module struct {
 	CurrentVersion string `json:"current_version"`
 }
 
+// RepoView is a Repo enriched with its silo name and a per-request CanEdit flag
+// (whether the current user may configure this repo's release branch).
+type RepoView struct {
+	Repo
+	SiloName string `json:"silo_name"`
+	CanEdit  bool   `json:"can_edit"`
+}
+
+// UpdateRepoBranchRequest sets a repo's release branch.
+type UpdateRepoBranchRequest struct {
+	ReleaseBranch string `json:"release_branch" binding:"required"`
+}
+
 // --- Dependency Graph ---
 
 type DepEdge struct {
@@ -68,11 +81,11 @@ const (
 type ReleasePhase string
 
 const (
-	PhaseNone       ReleasePhase = "NONE"
-	PhaseTagging    ReleasePhase = "TAGGING"
-	PhaseAnalyzing  ReleasePhase = "ANALYZING"
-	PhaseReleasing  ReleasePhase = "RELEASING"
-	PhaseCompleted  ReleasePhase = "COMPLETED"
+	PhaseNone      ReleasePhase = "NONE"
+	PhaseTagging   ReleasePhase = "TAGGING"
+	PhaseAnalyzing ReleasePhase = "ANALYZING"
+	PhaseReleasing ReleasePhase = "RELEASING"
+	PhaseCompleted ReleasePhase = "COMPLETED"
 )
 
 type FailureStrategy string
@@ -120,16 +133,16 @@ type ReleasePlan struct {
 // --- Release Progress ---
 
 type ReleaseProgress struct {
-	PlanID       string       `json:"plan_id"`
-	Phase        ReleasePhase `json:"phase"`
-	Status       PlanStatus   `json:"status"`
-	TotalModules int          `json:"total_modules"`
-	Pending      int          `json:"pending"`
-	Tagged       int          `json:"tagged"`
-	Releasing    int          `json:"releasing"`
-	Succeeded    int          `json:"succeeded"`
-	Failed       int          `json:"failed"`
-	Skipped      int          `json:"skipped"`
+	PlanID       string            `json:"plan_id"`
+	Phase        ReleasePhase      `json:"phase"`
+	Status       PlanStatus        `json:"status"`
+	TotalModules int               `json:"total_modules"`
+	Pending      int               `json:"pending"`
+	Tagged       int               `json:"tagged"`
+	Releasing    int               `json:"releasing"`
+	Succeeded    int               `json:"succeeded"`
+	Failed       int               `json:"failed"`
+	Skipped      int               `json:"skipped"`
 	Modules      []PlanModuleEntry `json:"modules"`
 }
 
@@ -166,11 +179,11 @@ type PlanCompleteEvent struct {
 // --- API Requests ---
 
 type CreatePlanRequest struct {
-	SiloIDs         []string          `json:"silo_ids" binding:"required"`
-	DmsBranch       string            `json:"dms_branch" binding:"required"`
-	Concurrency     int               `json:"concurrency"`
-	FailureStrategy FailureStrategy   `json:"failure_strategy"`
-	MaxRetries      int               `json:"max_retries"`
+	SiloIDs         []string        `json:"silo_ids" binding:"required"`
+	DmsBranch       string          `json:"dms_branch" binding:"required"`
+	Concurrency     int             `json:"concurrency"`
+	FailureStrategy FailureStrategy `json:"failure_strategy"`
+	MaxRetries      int             `json:"max_retries"`
 }
 
 type UpdateVersionsRequest struct {
@@ -180,15 +193,15 @@ type UpdateVersionsRequest struct {
 // --- History ---
 
 type HistoryEntry struct {
-	PlanID      string     `json:"plan_id"`
-	SiloIDs     []string   `json:"silo_ids"`
-	SiloNames   []string   `json:"silo_names"`
-	Status      PlanStatus `json:"status"`
-	TotalModules int       `json:"total_modules"`
-	Succeeded   int        `json:"succeeded"`
-	Failed      int        `json:"failed"`
-	Skipped     int        `json:"skipped"`
-	Duration    string     `json:"duration"`
-	CreatedAt   time.Time  `json:"created_at"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	PlanID       string     `json:"plan_id"`
+	SiloIDs      []string   `json:"silo_ids"`
+	SiloNames    []string   `json:"silo_names"`
+	Status       PlanStatus `json:"status"`
+	TotalModules int        `json:"total_modules"`
+	Succeeded    int        `json:"succeeded"`
+	Failed       int        `json:"failed"`
+	Skipped      int        `json:"skipped"`
+	Duration     string     `json:"duration"`
+	CreatedAt    time.Time  `json:"created_at"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 }

@@ -1,7 +1,16 @@
 // API client wrapper
 const API = {
+    _handle401(res) {
+        if (res.status === 401) {
+            window.location.href = '/auth/login';
+            return true;
+        }
+        return false;
+    },
+
     async get(url) {
-        const res = await fetch(url);
+        const res = await fetch(url, { credentials: 'same-origin' });
+        if (this._handle401(res)) throw new Error('unauthorized');
         if (!res.ok) throw new Error(`GET ${url}: ${res.status}`);
         return res.json();
     },
@@ -9,9 +18,11 @@ const API = {
     async post(url, body) {
         const res = await fetch(url, {
             method: 'POST',
+            credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
             body: body ? JSON.stringify(body) : undefined,
         });
+        if (this._handle401(res)) throw new Error('unauthorized');
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.error || `POST ${url}: ${res.status}`);
@@ -22,9 +33,11 @@ const API = {
     async put(url, body) {
         const res = await fetch(url, {
             method: 'PUT',
+            credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
+        if (this._handle401(res)) throw new Error('unauthorized');
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.error || `PUT ${url}: ${res.status}`);
@@ -32,10 +45,23 @@ const API = {
         return res.json();
     },
 
+    // Auth & users
+    getCurrentUser() { return this.get('/api/current-user'); },
+    logout() { return this.post('/api/logout'); },
+    getUsers() { return this.get('/api/admin/users'); },
+    getRoles() { return this.get('/api/admin/roles'); },
+    importUsers(users) { return this.post('/api/admin/users/import', { users }); },
+    setUserRoles(uid, roles) { return this.put(`/api/admin/users/${uid}/roles`, { roles }); },
+    setUserAccess(uid, allowedSilos) { return this.put(`/api/admin/users/${uid}/access`, { allowed_silos: allowedSilos }); },
+
     // Product tree
     getSilos() { return this.get('/api/silos'); },
     getReposBySilo(siloId) { return this.get(`/api/silos/${siloId}/repos`); },
     getModulesByRepo(repoId) { return this.get(`/api/repos/${repoId}/modules`); },
+
+    // Repos (full list + branch config)
+    getRepos() { return this.get('/api/repos'); },
+    updateRepoBranch(repoId, releaseBranch) { return this.put(`/api/repos/${repoId}/branch`, { release_branch: releaseBranch }); },
 
     // Plans
     createPlan(data) { return this.post('/api/plans', data); },

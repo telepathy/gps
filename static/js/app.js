@@ -1,10 +1,57 @@
 // SPA Router & App initialization
 const App = {
     currentPage: null,
+    currentUser: null,
 
-    init() {
+    async init() {
+        // Authenticate before rendering anything. On failure api.js redirects to /auth/login.
+        try {
+            this.currentUser = await API.getCurrentUser();
+        } catch (e) {
+            return; // redirected to login
+        }
+        this._renderUserArea();
         window.addEventListener('hashchange', () => this.route());
         this.route();
+    },
+
+    hasRole(role) {
+        return !!(this.currentUser && (this.currentUser.roles || []).includes(role));
+    },
+
+    can(action) {
+        // Mirror of backend role→action mapping for UI gating only.
+        const roles = (this.currentUser && this.currentUser.roles) || [];
+        const map = {
+            admin: ['manage', 'create', 'release', 'view'],
+            releaser: ['create', 'release', 'view'],
+            viewer: ['view'],
+        };
+        return roles.some(r => (map[r] || []).includes(action));
+    },
+
+    _renderUserArea() {
+        const u = this.currentUser;
+        if (!u) return;
+        const area = document.getElementById('nav-user');
+        if (area) area.style.display = '';
+        const avatar = document.getElementById('user-avatar');
+        if (avatar) avatar.textContent = (u.username || '?')[0].toUpperCase();
+        const name = document.getElementById('user-name');
+        if (name) name.textContent = u.username;
+        const role = document.getElementById('user-role');
+        if (role) role.textContent = (u.roles || []).join(', ') || '无角色';
+        if (this.hasRole('admin')) {
+            const navAdmin = document.getElementById('nav-admin');
+            if (navAdmin) navAdmin.style.display = '';
+        }
+        const logoutBtn = document.getElementById('logout-btn');
+        if (logoutBtn) {
+            logoutBtn.onclick = async () => {
+                try { await API.logout(); } catch (e) {}
+                window.location.href = '/auth/login';
+            };
+        }
     },
 
     route() {
@@ -44,10 +91,31 @@ const App = {
             this.currentPage = ReleaseMonitorPage;
             ReleaseMonitorPage.render(app, match[1]);
 
+        } else if (hash === '#/repos') {
+            this._setActiveNav('repos');
+            this.currentPage = ReposPage;
+            ReposPage.render(app);
+
         } else if (hash === '#/history') {
             this._setActiveNav('history');
             this.currentPage = ReleaseHistoryPage;
             ReleaseHistoryPage.render(app);
+
+        } else if (hash === '#/admin') {
+            this._setActiveNav('admin');
+            if (!this.hasRole('admin')) {
+                this.currentPage = null;
+                app.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#128274;</div>
+                        <p class="empty-state-text">无权限访问</p>
+                        <a href="#/" class="btn btn-primary" style="margin-top:16px;">返回首页</a>
+                    </div>
+                `;
+                return;
+            }
+            this.currentPage = AdminPage;
+            AdminPage.render(app);
 
         } else {
             app.innerHTML = `
