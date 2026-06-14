@@ -144,20 +144,35 @@ GPS/DAS (Go)                          K8s 集群
 
 选 Job 而非常驻 Pod 的原因:批任务语义吻合,可用 `backoffLimit`、`activeDeadlineSeconds`、`ttlSecondsAfterFinished` 管理重试/超时/清理。
 
-### 3.2 镜像(`FROM openjdk` + git/curl)
+### 3.2 镜像:职责分离,不污染 Java 容器
 
-openjdk 官方镜像不含 git/curl,自烤一层:
+代码拉取与依赖分析用**两个独立镜像**,经共享卷传递代码,使分析容器保持纯净(不含 git/ssh):
+
+**(a) clone 镜像(initContainer 用)**——纯 git/ssh 工具,不含 JDK:
 
 ```dockerfile
-FROM eclipse-temurin:17-jdk     # 或 openjdk:17-jdk
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      git curl openssh-client ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-ENV GRADLE_USER_HOME=/gradle-cache     # 预置/缓存 Gradle 发行版,避免每个 Job 重新下载 wrapper dist
+# registry/gps-das-git:latest
+FROM alpine/git:latest        # 已含 git + openssh;或 FROM alpine + apk add git openssh-client
+# 无需额外内容,克隆逻辑由 Job 的 command 提供
+```
+
+**(b) analyze 镜像(主容器用)**——纯净 openjdk,**不装 git、不装 ssh**:
+
+```dockerfile
+# registry/gps-das-jdk:latest
+FROM eclipse-temurin:17-jdk           # 或 openjdk:17-jdk,保持官方镜像的纯净
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*       # 仅加 curl 用于回传;不引入 git/openssh
+ENV GRADLE_USER_HOME=/gradle-cache    # 预置/缓存 Gradle 发行版,避免每个 Job 重新下载 wrapper dist
 WORKDIR /work
 ```
 
-> gradlew(wrapper)首次运行会联网下载 Gradle 发行版。要么镜像里预置 `GRADLE_USER_HOME`,要么挂只读 gradle-dist 缓存卷(§3.5)。
+要点:
+- **拉代码(git/ssh)只存在于 init 镜像**,Java 镜像与版本控制工具彻底解耦,符合"init 容器准备数据、主容器只跑业务"的 K8s 惯例。
+- analyze 镜像只在官方 openjdk 上加了一个 `curl`(用于回传结果)。若回传也想剥离,可再拆一个 sidecar/后置 init 容器,但通常 curl 足够轻量、可接受;git/ssh 才是真正需要隔离的重量级污染。
+- 两镜像各自精简,init 镜像极小、启动快;analyze 镜像无关工具最少,攻击面更小。
+
+> gradlew(wrapper)首次运行会联网下载 Gradle 发行版。要么 analyze 镜像里预置 `GRADLE_USER_HOME`,要么挂只读 gradle-dist 缓存卷(§3.5)。
 
 ### 3.3 init script 用 ConfigMap 注入
 
@@ -193,8 +208,8 @@ spec:
         - { name: ssh-key,      secret: { secretName: codeup-ssh, defaultMode: 0400 } }
         - { name: gradle-cache, persistentVolumeClaim: { claimName: gradle-dist-cache } }  # 只读发行版缓存
       initContainers:
-        - name: clone                       # 1. 克隆 tag(浅克隆,只读)
-          image: registry/gps-das:latest
+        - name: clone                       # 1. 克隆 tag(浅克隆,只读)— 纯 git 镜像
+          image: registry/gps-das-git:latest
           command: ["sh","-c"]
           args:
             - |
@@ -204,8 +219,8 @@ spec:
             - { name: workspace, mountPath: /work }
             - { name: ssh-key,   mountPath: /keys }
       containers:
-        - name: analyze                     # 2. 评估 Gradle 模型
-          image: registry/gps-das:latest
+        - name: analyze                     # 2. 评估 Gradle 模型 — 纯净 openjdk 镜像(无 git/ssh)
+          image: registry/gps-das-jdk:latest
           workingDir: /work/src
           env:
             - { name: DEP_BRANCH,        value: "{{akasha_branch}}" }   # gradle.properties: depBranch
@@ -230,7 +245,8 @@ spec:
 ```
 
 要点:
-- **initContainer 克隆 / 主容器分析**,经 `emptyDir` 共享工作区,职责清晰。
+- **职责分离**:init 容器(`gps-das-git`)拉代码,主容器(`gps-das-jdk`)只评估 Gradle,二者经 `emptyDir` 共享 `/work`;git/ssh 不进 Java 容器。
+- ssh-key Secret 只挂给 init 容器,主容器不接触凭据。
 - **结果回传用 `curl POST` 到 DAS 回调端点**(带 repo_id+tag+plan_id),比读 Pod 日志稳健(日志会被 Gradle 噪声污染、有大小限制)。
 - `help -q` 只完成 configuration 阶段即触发脚本,不进入编译/业务执行。
 
