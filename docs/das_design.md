@@ -131,19 +131,28 @@ gradle.projectsEvaluated {
 
 ### 3.1 架构
 
+DAS 是**纯 K8s 工具:无数据库、无业务状态,只通过 HTTP(curl)与外部交互**。它接收 GPS 的分析请求、拉起 K8s Job 提取每个 repo 的 Gradle 模型、聚合各 repo 的**原始结果**后 HTTP 返回 GPS。**归一化、分类、拓扑、环检测、落库全部在 GPS 侧**(DAS 不读写任何 GPS 数据表)。
+
 ```
-GPS/DAS (Go)                          K8s 集群
-   │  对每个 repo 渲染并创建 Job (repo_id + tag + akasha分支)
-   ├──────────────────────────────────────────────▶  Job: das-<repo>-<tag>
-   │                                                    initContainer: git clone --branch <tag>
-   │                                                    container(openjdk+git): gradlew --init-script
-   │                                                       └ apply from akasha (取 ext.libraries 版本)
-   │                                                       └ 写 das-output.json
-   │  ◀───────── POST /das/callback (das-output.json) ─────┘ (Job 内 curl 回传)
-   │  收齐所有 repo → 归一化 → GA 图 + 环检测 → 落库
+GPS (Go, 持有 DB)              DAS (纯 K8s 工具, 无 DB)            K8s 集群
+  │ ① POST /das/analyze                                          
+  │   {plan_id, akasha_branch,                                   
+  │    repos:[{repo_id,url,tag,jdk}]}                            
+  ├──────────────────────────────▶│                              
+  │                                │ ② 每 repo 渲染并创建 Job ───────▶ Job: das-<repo>-<tag>
+  │                                │                                  init(git): clone --branch <tag>
+  │                                │                                  analyze(jdk): gradlew --init-script
+  │                                │                                     └ apply from akasha(取版本)
+  │                                │ ◀── ③ Job 内 curl POST 原始结果 ──┘    └ 写 das-output.json
+  │                                │ ④ 聚合所有 repo 的原始 subprojects+edges
+  │ ◀── ⑤ HTTP 返回聚合的原始结果 ───│   (不归一化、不落库)
+  │ ⑥ 归一化 + 分类 + cross_repo + 拓扑 + 环检测(§4)
+  │ ⑦ 落库 plan_module / plan_dep_edge / plan_topo_order(§6)
 ```
 
-选 Job 而非常驻 Pod 的原因:批任务语义吻合,可用 `backoffLimit`、`activeDeadlineSeconds`、`ttlSecondsAfterFinished` 管理重试/超时/清理。
+- DAS 与外部的**全部交互均为 HTTP**:接收 GPS `POST /das/analyze`、接收 Job `POST /das/callback`、向 GPS 返回聚合结果。
+- repo 列表 / tag / jdk / akasha 分支由 GPS 在 ① 的请求体传入,DAS **不查任何表**。
+- 选 Job 而非常驻 Pod:批任务语义吻合,可用 `backoffLimit`、`activeDeadlineSeconds`、`ttlSecondsAfterFinished` 管理重试/超时/清理。
 
 ### 3.2 镜像:职责分离,不污染 Java 容器
 
@@ -308,9 +317,11 @@ registry/gps-das-jdk:21    # eclipse-temurin:21-jdk + curl + gradle 缓存
 
 > Job 模板(§3.4)中 `analyze` 容器的 `image: registry/gps-das-jdk:{{jdk}}` 由 DAS 在渲染时按 repo 的 JDK 版本填充。
 
-## 4. GPS 侧归一化(汇总后,纯逻辑,不碰 Gradle)
+## 4. 归一化(GPS 侧,纯逻辑,不碰 Gradle、不在 DAS)
 
-收齐所有 repo 的 `das-output.json` 后:
+> 归一化是 **GPS 的职责**,因为它需要"哪些 repo 启用 devops""自研 group 命名空间"等业务上下文与产品树知识。DAS 只把各 repo 的原始 `subprojects + edges` 聚合后返回,不做归一化。
+
+GPS 收到 DAS 返回的聚合原始结果后:
 
 1. 用每个 repo 的 `subprojects` 建表 `gradlePath → GA`(GA = `group:artifact`)。
 2. 逐边把两端解析为 GA:
@@ -325,23 +336,64 @@ registry/gps-das-jdk:21    # eclipse-temurin:21-jdk + curl + gradle 缓存
 
 `artifact` 即 akasha 的 join key;同一 akasha 分支内 artifact 须唯一,归一化时若发现冲突报错。
 
-## 5. 编排逻辑(DAS 服务)
+## 5. DAS 接口与编排(纯 K8s + curl,无 DB)
+
+DAS 对外只暴露两个 HTTP 端点,内部只做"拉 Job + 聚合原始结果",**不访问任何 GPS 数据表、不做归一化/拓扑/落库**。
+
+### 5.1 接口
+
+**(1) `POST /das/analyze`** —— GPS 调用,发起一次分析(同步阻塞直到聚合完成,或异步 + 回调,二选一;下以同步描述):
+
+请求体(GPS 传入全部所需信息,DAS 不查表):
+```json
+{
+  "plan_id": "plan-001",
+  "akasha_branch": "202603",
+  "repos": [
+    {"repo_id":"repo-0012","repo_url":"ssh://…/issuance.git","tag":"v2026.03","jdk":"17"},
+    {"repo_id":"repo-0007","repo_url":"ssh://…/settle.git","tag":"v2026.03","jdk":"8"}
+  ]
+}
+```
+
+返回体(各 repo 的**原始**结果聚合,未归一化):
+```json
+{
+  "plan_id": "plan-001",
+  "repos": [
+    {
+      "repo_id": "repo-0012",
+      "status": "DONE",
+      "subprojects": [{"gradle_path":":core:api","group":"com.csdc.spot","artifact":"issuance-core-api"}, …],
+      "edges": [{"from":":core:model","to":":core:api","type":"project"}, …]
+    },
+    { "repo_id": "repo-0007", "status": "FAILED", "error": "gradle evaluate failed: …" }
+  ]
+}
+```
+
+GPS 据此自行归一化(§4)、拓扑、环检测、落库;任一 repo `status=FAILED` 则 GPS 让 Phase 2 失败。
+
+**(2) `POST /das/callback?plan_id&repo_id&tag`** —— Job 内 curl 调用,回传单个 repo 的 `das-output.json`。DAS 在内存中按 `plan_id` 暂存,收齐后供 `/das/analyze` 聚合返回。
+
+### 5.2 编排逻辑(DAS 内部)
 
 ```
-analyzePlan(plan_id, repos[], akashaBranch):
+handle POST /das/analyze(plan_id, akasha_branch, repos):
   for repo in repos:                       # 受 maxParallel 信号量限制
-     renderJobYAML(repo, akashaBranch) → k8s.CreateJob()
-       # analyze 容器镜像 = registry/gps-das-jdk:<repo.jdk>(§3.6.3),缺省用默认 JDK
+     renderJobYAML(repo, akasha_branch) → k8s.CreateJob()
+       # init 容器镜像 = gps-das-git;analyze 容器镜像 = gps-das-jdk:<repo.jdk>(§3.6.3)
   收集:每个 repo 的 das-output.json 经 /das/callback 收齐
-        (并 watch Job.status;超时/失败的 repo 标记 analysis_failed)
-  归一化所有 subprojects+edges → GA 图(§4)
-  拓扑 + 环检测
-  落 plan_module / plan_dep_edge / plan_topo_order(§6)
+        (并 watch Job.status;超时/失败的 repo 记 status=FAILED + error)
+  聚合所有 repo 的原始 {subprojects, edges, status} → HTTP 返回 GPS
+  # DAS 到此为止:不归一化、不拓扑、不落库、不碰 DB
 ```
 
+- 状态只存在 DAS 内存(本次请求生命周期内),**不持久化**;DAS 重启即丢,由 GPS 重新发起分析。
 - 并发上限:DAS 内信号量控制同时创建的 Job 数(也可配 ResourceQuota 兜底)。
-- 失败处理:某 repo Job 失败/超时 → 标 `analysis_failed`,整个 Phase 2 失败并指出是哪个 repo;支持单 repo 重跑。
+- 失败处理:某 repo Job 失败/超时 → 在返回体里把该 repo 标 `status=FAILED`;**是否中止由 GPS 决定**。
 - 幂等:Job 名含 `repo_id+tag`,重复创建先删后建或加随机后缀。
+- 单 repo 重跑:GPS 用只含该 repo 的 `repos` 再次调 `/das/analyze` 即可(DAS 无状态,天然支持)。
 
 ### 5.1 RBAC 与 Secret
 
@@ -366,7 +418,9 @@ rules:
     verbs: ["get","list"]
 ```
 
-## 6. 落库 schema(计划级快照)
+## 6. 落库 schema(计划级快照,**由 GPS 写入,DAS 不访问**)
+
+> 以下表都是 **GPS 的数据表**,在 §3.1 步骤 ⑦ 由 GPS 在归一化后写入。**DAS 不读写这些表**——它只把原始结果 HTTP 返回 GPS。列出于此是为说明依赖分析最终落地的形态。
 
 依赖分析结果是计划级快照(不同 plan / tag 可能不同图),全部表带 `plan_id`。
 
@@ -457,7 +511,10 @@ CREATE TABLE plan_topo_order (
 ## 9. 与 GPS 主流程的衔接
 
 - 本方案是 `design.md` §5.2 DAS 的真实实现,被 GPS **Phase 2(依赖分析与拓扑排序)** 调用。
-- GPS 主程序不直接操作 K8s;DAS 作为独立服务(in-cluster config)负责拉起、监控、回收 Job,并把归一化后的图返回 GPS。
-- 产出的 `plan_module / plan_dep_edge / plan_topo_order` 供 Phase 2.5(pending-external 确认)与 Phase 3(并发池发布)消费。
+- **职责边界**:
+  - **DAS**——纯 K8s 工具,无数据库、无持久状态;只通过 HTTP(curl)交互:接收 `POST /das/analyze`、接收 Job 的 `POST /das/callback`、向 GPS 返回**未归一化的原始聚合结果**。负责拉起/监控/回收 K8s Job。
+  - **GPS**——持有数据库与业务上下文;负责归一化、节点分类、cross_repo 判定、拓扑排序、环检测,并把结果落库(`plan_module / plan_dep_edge / plan_topo_order`)。
+- GPS 主程序不直接操作 K8s,统一委托 DAS;DAS 也不反向访问 GPS 的 DB,所需信息全部由 GPS 在 `/das/analyze` 请求体传入。
+- 落库产物供 Phase 2.5(pending-external 确认)与 Phase 3(并发池发布)消费。
 
 > 本文档为详细设计,具体编码在后续迭代落地。
