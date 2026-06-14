@@ -12,45 +12,71 @@ The design document (`design.md`) is the source of truth for all architectural d
 
 ```bash
 go build -o gps-server .    # Build single binary (frontend embedded via //go:embed)
-./gps-server                 # Start server at http://localhost:8080
+./gps-server                 # Start server at http://localhost:4777
 go run main.go               # Build and run in one step
 ```
 
 No separate frontend build step needed — static files are embedded at compile time.
+
+### Auth config (optional environment variables)
+
+```bash
+GPS_JWT_SECRET           # JWT signing secret; if unset an ephemeral one is generated (sessions reset on restart)
+GPS_GITLAB_URL           # GitLab instance, e.g. https://gitlab.internal.com
+GPS_GITLAB_APP_ID        # OAuth app ID; setting this enables GitLab SSO
+GPS_GITLAB_APP_SECRET    # OAuth app secret
+GPS_GITLAB_CALLBACK_URL  # Callback, points to /auth/gitlab/callback
+```
+
+When GitLab is not configured, login falls back to mock login with the built-in `admin` account.
 
 ## Architecture
 
 ### Backend (Go + Gin)
 
 ```
-main.go                         # Gin server, //go:embed, route registration
+main.go                         # Gin server, //go:embed, auth wiring, route registration
 internal/
-├── model/model.go              # All domain structs (Silo, Repo, Module, ReleasePlan, etc.)
+├── model/
+│   ├── model.go                # All domain structs (Silo, Repo, Module, ReleasePlan, etc.)
+│   └── user.go                 # User, Role, GitlabUser, auth request structs + action/role consts
+├── auth/
+│   └── service.go              # GitLab OAuth2 (resty, InsecureSkipVerify) + HS256 JWT generate/parse
+├── dalaran/
+│   └── client.go               # Fetches silo/repo tree from dalaran GET /api/v1/silos; skips non-devops repos (devopsOpt=false); module info ignored
+├── middleware/
+│   └── auth.go                 # RequireAuth: JWT from Bearer header or cookie → gin context
 ├── mock/
-│   ├── generator.go            # Deterministic mock data (30 silos, 47 repos, 104 modules + DAG)
-│   ├── store.go                # Thread-safe in-memory store (sync.RWMutex), SSE pub/sub
+│   ├── generator.go            # Synthesizes modules + dependency DAG for dalaran-sourced repos (silo/repo are NOT mocked)
+│   ├── store.go                # Thread-safe in-memory store (sync.RWMutex), SSE pub/sub, users/roles + seeded admin
 │   └── simulator.go            # Goroutine-based release simulator (4-phase state machine)
 └── handler/
     ├── silo.go                 # GET /api/silos, repos, modules
-    ├── plan.go                 # CRUD for release plans
-    ├── release.go              # Execute, progress polling, SSE event stream, abort
-    └── history.go              # Historical release records
+    ├── repo.go                  # GET /api/repos (full list + can_edit), PUT /api/repos/:id/branch
+    ├── plan.go                 # CRUD for release plans (write ops: create/release action + silo-scope checks)
+    ├── release.go              # Execute, progress polling, SSE event stream, abort (release action + silo-scope)
+    ├── history.go              # Historical release records
+    ├── auth.go                 # Login page, mock-login, GitLab callback, logout, current-user
+    ├── admin.go                # User/role management (requires manage action)
+    └── rbac.go                 # currentUser / requireAction / canReleaseSilos helpers
 ```
 
 ### Frontend (Vanilla JS SPA)
 
 ```
 static/
-├── index.html                  # SPA shell with hash-based routing (#/)
+├── index.html                  # SPA shell with hash-based routing (#/), nav user area + admin link
 ├── css/style.css               # Dark theme, CSS variables, full component styles
 ├── js/
-│   ├── app.js                  # Hash router + page lifecycle management
-│   ├── api.js                  # Fetch wrapper + SSE subscription + utility functions
+│   ├── app.js                  # Hash router + lifecycle; checkAuth() gate, role-based nav/route gating
+│   ├── api.js                  # Fetch wrapper (credentials + 401→/auth/login) + SSE + auth/admin methods
 │   ├── pages/
 │   │   ├── plan-create.js      # Silo selector → module preview → create plan
 │   │   ├── version-confirm.js  # Collapsible grouped table, inline version editing
 │   │   ├── release-monitor.js  # DAG visualization + real-time logs + phase stepper (core page)
-│   │   └── release-history.js  # Historical release list
+│   │   ├── release-history.js  # Historical release list
+│   │   ├── repos.js            # Flat repo table: silo code, repo name (link → SSH-to-HTTPS web URL), release branch, action; silo-code filter; branch editable only when can_edit
+│   │   └── admin.js            # User role & silo-scope management + batch import (admin only)
 │   └── components/
 │       ├── dag-graph.js        # Pure SVG DAG with pan/zoom (no D3 dependency)
 │       └── log-panel.js        # Filterable real-time log panel
@@ -82,17 +108,48 @@ GPS coordinates four external systems (currently mocked):
 - **DAG is edge-driven**: dependency graph is a flat list of `(from, to)` module-ID tuples with no layer metadata; the frontend computes layout depth via longest-path BFS from roots
 - **Topo-sort + concurrent pool** (not layer-based grouping): any module whose upstream deps are done can start immediately
 - **SSE for real-time updates**: unidirectional push from simulator to browser, simpler than WebSocket
-- **Mock data uses fixed seed (42)**: deterministic, reproducible data generation
+- **Silo/repo from dalaran, modules mocked**: silo & repo data is fetched from dalaran's `GET /api/v1/silos` at startup (`GPS_DALARAN_URL` is required — a missing config or failed fetch is fatal). Only repos with `devopsOpt=true` are kept; repo `Name` is derived from the URL's last segment and `ReleaseBranch` defaults to `main`. Modules and the dependency DAG are always synthesized GPS-side (fixed seed 42) since dalaran's module info is intentionally not used.
+- **GitLab SSO, GPS-internal RBAC**: identity is read-only from a self-signed GitLab (username only, TLS skipped); roles/permissions are owned by GPS, decoupled from GitLab org/project permissions
 
 ## API Endpoints
+
+All `/api/*` routes are behind the `RequireAuth` middleware (401 if no valid JWT). Write operations add role + silo-scope checks (see Auth & RBAC below). `/auth/*` routes are public.
+
+### Auth & Users
+
+| Method | Path | Auth | Purpose | Used By |
+|--------|------|------|---------|---------|
+| GET | /auth/login | public | Standalone login page (GitLab button + mock-login form) | browser |
+| POST | /auth/mock-login | public | Login by username (built-in `admin`, no GitLab) | login page |
+| GET | /auth/gitlab/callback | public | GitLab OAuth2 callback → JWT cookie | GitLab |
+| GET | /api/current-user | login | Current user (with roles) | app.js checkAuth |
+| POST | /api/logout | login | Clear session cookie | nav logout |
+| GET | /api/admin/users | manage | List users | admin page |
+| GET | /api/admin/roles | manage | List roles | admin page |
+| POST | /api/admin/users/import | manage | Batch pre-register users (`{users:[{username,email,roles,allowed_silos}]}`) → `{created,skipped,failed}` | admin page |
+| PUT | /api/admin/users/:uid/roles | manage | Set a user's roles | admin page |
+| PUT | /api/admin/users/:uid/access | manage | Set a user's `allowed_silos` | admin page |
+
+**Auth & RBAC model**: Identity comes from a self-signed GitLab instance via OAuth2 (`scope=read_user`, TLS verification skipped, only `username` consumed); first-time GitLab users get the `viewer` role. Session is an HS256 JWT (24h) in an HttpOnly cookie. Three built-in roles map to actions: `admin` (view+create+release+manage, bypasses silo-scope), `releaser` (view+create+release within `allowed_silos`), `viewer` (view only). `allowed_silos` is `"*"` / `""` / comma-separated silo IDs. Users/roles live in the in-memory store (seeded `admin` with `allowed_silos="*"`); lost on restart.
+
+**User import (pre-register + SSO bind)**: Admins can batch pre-register usernames (with optional roles/`allowed_silos`); imported users have `GitlabID=0`. Identity is still managed by GitLab SSO — on first GitLab login `FindOrCreateUser` matches by username, binds the GitLab info (id/email/avatar) and **preserves the imported roles & silo scope**. Re-importing an existing username is skipped (never overwrites). Empty roles default to `viewer`; unknown roles are rejected.
 
 ### Product Tree
 
 | Method | Path | Purpose | Used By |
 |--------|------|---------|---------|
-| GET | /api/silos | List all 30 silos | plan-create |
+| GET | /api/silos | List all silos (from dalaran) | plan-create |
 | GET | /api/silos/:id/repos | Repos under a silo | plan-create |
 | GET | /api/repos/:id/modules | Modules under a repo | plan-create |
+
+### Repos
+
+| Method | Path | Auth | Purpose | Used By |
+|--------|------|------|---------|---------|
+| GET | /api/repos | login | All repos as `RepoView` (silo_name + per-user `can_edit`) | repos page |
+| PUT | /api/repos/:id/branch | release + silo-scope | Set a repo's release branch (`{release_branch}`) | repos page |
+
+`can_edit` is true when the user has the `release` action **and** the repo's silo is within the user's `allowed_silos`. Viewing the full list only requires login; the branch write is hard-checked server-side (403 otherwise).
 
 ### Release Plans
 
