@@ -13,14 +13,15 @@
   "plan_id": "plan-001",
   "akasha_branch": "202603",
   "repos": [
-    { "repo_id": "repo-0012", "repo_url": "ssh://git@codeup.../issuance.git", "tag": "v2026.03" },
-    { "repo_id": "repo-0007", "repo_url": "ssh://git@codeup.../settle.git",   "tag": "v2026.03" }
+    { "repo_id": "repo-0012", "repo_url": "ssh://git@codeup.../issuance.git", "tag": "v2026.03", "jdk": "17" },
+    { "repo_id": "repo-0007", "repo_url": "ssh://git@codeup.../settle.git",   "tag": "v2026.03", "jdk": "8" }
   ]
 }
 ```
 
 - 一组仓库 + **各自本次发布的 tag**(已由 GPS Phase 1 统一打好,源码已冻结)。
 - **akasha 分支**:仓库通过 `apply from: akasha/dependency?branch=` 注入跨仓库依赖版本,分析时必须指定与本次发布一致的分支。
+- **jdk**:每个 repo 所需的 JDK 大版本,决定分析容器镜像 tag(§3.6.3);缺省用默认版本。
 
 ### 1.2 输出(GPS 归一化后的目标形态)
 
@@ -219,8 +220,8 @@ spec:
             - { name: workspace, mountPath: /work }
             - { name: ssh-key,   mountPath: /keys }
       containers:
-        - name: analyze                     # 2. 评估 Gradle 模型 — 纯净 openjdk 镜像(无 git/ssh)
-          image: registry/gps-das-jdk:latest
+        - name: analyze                     # 2. 评估 Gradle 模型 — 纯净 openjdk 镜像(无 git/ssh),JDK 版本按 repo 选(§3.6.3)
+          image: registry/gps-das-jdk:{{jdk}}
           workingDir: /work/src
           env:
             - { name: DEP_BRANCH,        value: "{{akasha_branch}}" }   # gradle.properties: depBranch
@@ -261,6 +262,52 @@ spec:
 
 结论:**半离线**——Maven 解析关闭(`--offline`),但 akasha 必须可达。若把 akasha 清单预先下载成本地文件注入,可做到完全离线;通常同集群直连 akasha 更简单。
 
+### 3.6 镜像要求与多 JDK 版本选择(方案 B)
+
+两个镜像职责分离(§3.2),各自要求如下。
+
+#### 3.6.1 `gps-das-git`(initContainer 拉代码)
+
+| 维度 | 要求 |
+|------|------|
+| 基础镜像 | `alpine/git` 或 `alpine + apk add git openssh-client`(极简) |
+| 必备工具 | `git`、`ssh`(`openssh-client`);如有 https 克隆则加 `ca-certificates` |
+| 不应包含 | JDK、Gradle、业务工具——保持最小 |
+| 运行身份 | 能读挂载的 ssh-key(`0400`)、能写共享卷 `/work` |
+| 网络 | 可达 codeup git 服务器(ssh 端口,如 9022) |
+
+约束:`StrictHostKeyChecking=no`(内网自签名/首次连接);ssh-key 经 Secret 注入,不打进镜像。**单一版本即可**(与被分析项目无关)。
+
+#### 3.6.2 `gps-das-jdk`(主容器分析)
+
+| 维度 | 要求 |
+|------|------|
+| 基础镜像 | `eclipse-temurin:<JDK>-jdk` 或 `openjdk:<JDK>-jdk`(保持官方纯净) |
+| JDK 版本 | **必须匹配被分析项目要求的 JDK**(见 §3.6.3) |
+| 必备工具 | `curl`(回传 das-output.json);**不装 git、不装 ssh** |
+| Gradle | **不预装**,用项目自带 `gradlew`;预置 `GRADLE_USER_HOME` 缓存发行版 |
+| 环境变量 | `GRADLE_USER_HOME=/gradle-cache` |
+| 网络 | 可达 akasha(`apply from`);**不需** Maven 仓库(`--offline`) |
+| 不应包含 | git、ssh —— 这是镜像拆分的核心目的 |
+
+#### 3.6.3 多 JDK 版本策略(方案 B:每个大版本一个镜像 tag)
+
+不同 repo 可能要求不同 JDK(8 / 17 / 21);DAS 评估阶段若 JDK 不匹配,Gradle 在 configuration 阶段即可能失败。采用**每个常用 JDK 大版本一个镜像 tag**,DAS 渲染 Job 时按 repo 选择对应镜像:
+
+```
+registry/gps-das-jdk:8     # eclipse-temurin:8-jdk  + curl + gradle 缓存
+registry/gps-das-jdk:17    # eclipse-temurin:17-jdk + curl + gradle 缓存
+registry/gps-das-jdk:21    # eclipse-temurin:21-jdk + curl + gradle 缓存
+```
+
+- **JDK 版本来源**:每个 repo 配置其所需 JDK 大版本(优先来自 dalaran/仓库元数据;缺省则用默认版本,如 17)。DAS 据此把 Job 模板的 `analyze` 容器镜像渲染为对应 tag。
+- **为什么按大版本分镜像最干净**:DAS 只做 configuration-time 评估,JDK 主要影响 Gradle 能否启动与脚本能否编译,不涉及产物;按大版本切分即可覆盖,无需单镜像内多 JDK 切换(避免 §C 方案的 `JAVA_HOME` 运行时切换复杂度)。
+- **default + 失败兜底**:未知/未配置 JDK 的 repo 用默认镜像;若分析因 JDK 不兼容失败,DAS 标记该 repo `analysis_failed` 并提示"疑似 JDK 版本不匹配",支持改配置后单 repo 重跑。
+- **git 镜像不受影响**:`gps-das-git` 与 JDK 无关,始终单一版本。
+- **缓存**:各 JDK 镜像可共享或各自挂 `gradle-dist-cache`(按 Gradle 发行版版本共存,见 §3.5)。
+
+> Job 模板(§3.4)中 `analyze` 容器的 `image: registry/gps-das-jdk:{{jdk}}` 由 DAS 在渲染时按 repo 的 JDK 版本填充。
+
 ## 4. GPS 侧归一化(汇总后,纯逻辑,不碰 Gradle)
 
 收齐所有 repo 的 `das-output.json` 后:
@@ -284,6 +331,7 @@ spec:
 analyzePlan(plan_id, repos[], akashaBranch):
   for repo in repos:                       # 受 maxParallel 信号量限制
      renderJobYAML(repo, akashaBranch) → k8s.CreateJob()
+       # analyze 容器镜像 = registry/gps-das-jdk:<repo.jdk>(§3.6.3),缺省用默认 JDK
   收集:每个 repo 的 das-output.json 经 /das/callback 收齐
         (并 watch Job.status;超时/失败的 repo 标记 analysis_failed)
   归一化所有 subprojects+edges → GA 图(§4)
