@@ -2,7 +2,6 @@
 const PlanCreatePage = {
     silos: [],
     selectedSiloIds: new Set(),
-    loadedModules: [],
 
     async render(container) {
         container.innerHTML = `
@@ -64,14 +63,6 @@ const PlanCreatePage = {
                     </div>
                 </div>
 
-                <div class="card" id="modules-preview" style="display:none;">
-                    <div class="card-header">
-                        <h3 class="card-title">模块预览</h3>
-                        <span id="module-count" style="font-size:13px;color:var(--text-dim);"></span>
-                    </div>
-                    <div id="modules-table"></div>
-                </div>
-
                 <div style="text-align:right;margin-top:16px;">
                     <button class="btn btn-primary btn-lg" id="create-plan-btn" disabled>
                         创建发版计划
@@ -122,7 +113,7 @@ const PlanCreatePage = {
         }, 200));
 
         // Silo selection
-        container.querySelector('#silo-grid').addEventListener('change', async (e) => {
+        container.querySelector('#silo-grid').addEventListener('change', (e) => {
             const item = e.target.closest('.silo-item');
             if (!item) return;
             const siloId = item.dataset.siloId;
@@ -137,87 +128,10 @@ const PlanCreatePage = {
 
             document.getElementById('silo-count').textContent = `已选: ${this.selectedSiloIds.size}`;
             document.getElementById('create-plan-btn').disabled = this.selectedSiloIds.size === 0;
-
-            await this._previewModules();
         });
 
         // Create plan
         container.querySelector('#create-plan-btn').addEventListener('click', () => this._createPlan());
-    },
-
-    async _previewModules() {
-        const preview = document.getElementById('modules-preview');
-        const table = document.getElementById('modules-table');
-
-        if (this.selectedSiloIds.size === 0) {
-            preview.style.display = 'none';
-            return;
-        }
-
-        // Load repos and modules for selected silos
-        const allModules = [];
-        const repoMap = {};
-
-        for (const siloId of this.selectedSiloIds) {
-            try {
-                const repoData = await API.getReposBySilo(siloId);
-                const repos = repoData.repos || [];
-
-                for (const repo of repos) {
-                    repoMap[repo.id] = repo;
-                    const modData = await API.getModulesByRepo(repo.id);
-                    const mods = modData.modules || [];
-                    mods.forEach(m => {
-                        m._repoName = repo.name;
-                        m._siloName = this.silos.find(s => s.id === siloId)?.name || siloId;
-                    });
-                    allModules.push(...mods);
-                }
-            } catch (err) {
-                console.error('Error loading modules for silo', siloId, err);
-            }
-        }
-
-        this.loadedModules = allModules;
-        preview.style.display = 'block';
-        document.getElementById('module-count').textContent = `${allModules.length} 个模块`;
-
-        // Group by silo -> repo
-        const grouped = {};
-        allModules.forEach(m => {
-            const key = `${m._siloName} / ${m._repoName}`;
-            if (!grouped[key]) grouped[key] = { modules: [], version: m.current_version };
-            grouped[key].modules.push(m);
-        });
-
-        let html = '<div class="table-wrap"><table><thead><tr>';
-        html += '<th>竖井 / 仓库</th><th>当前版本</th><th></th><th>目标版本</th><th>模块</th>';
-        html += '</tr></thead><tbody>';
-
-        Object.entries(grouped).forEach(([group, data]) => {
-            const target = this._bumpPatch(data.version);
-            const modNames = data.modules.map(m => {
-                const parts = m.name.split('-');
-                return parts[parts.length - 1];
-            }).join(', ');
-            html += `<tr>`;
-            html += `<td style="font-weight:600;color:var(--text-bright);">${group}</td>`;
-            html += `<td><code style="color:var(--text-dim);">${data.version}</code></td>`;
-            html += `<td class="version-arrow">&rarr;</td>`;
-            html += `<td><code style="color:var(--success);">${target}</code></td>`;
-            html += `<td style="font-size:12px;color:var(--text-dim);">${modNames} <span style="color:var(--text-dim);opacity:0.6;">(${data.modules.length})</span></td>`;
-            html += `</tr>`;
-        });
-
-        html += '</tbody></table></div>';
-        table.innerHTML = html;
-    },
-
-    _bumpPatch(version) {
-        const parts = version.split('.');
-        if (parts.length !== 3) return version;
-        parts[2] = parseInt(parts[2]) + 1;
-        return parts.join('.');
     },
 
     async _createPlan() {

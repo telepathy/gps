@@ -1,18 +1,18 @@
 package handler
 
 import (
-	"gps/internal/mock"
 	"gps/internal/model"
+	"gps/internal/store"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
 type PlanHandler struct {
-	store *mock.Store
+	store store.Store
 }
 
-func NewPlanHandler(store *mock.Store) *PlanHandler {
+func NewPlanHandler(store store.Store) *PlanHandler {
 	return &PlanHandler{store: store}
 }
 
@@ -71,6 +71,26 @@ func (h *PlanHandler) ConfirmPlan(c *gin.Context) {
 		return
 	}
 	if err := h.store.ConfirmPlan(planID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	plan := h.store.GetPlan(planID)
+	c.JSON(http.StatusOK, plan)
+}
+
+// ConfirmPendingExternal confirms that pending-external modules exist at
+// the correct version in the specified akasha branch.
+func (h *PlanHandler) ConfirmPendingExternal(c *gin.Context) {
+	planID := c.Param("id")
+	if !h.authorizePlanWrite(c, planID) {
+		return
+	}
+	var req model.ConfirmExternalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.store.ConfirmPendingExternal(planID, req.GAs); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

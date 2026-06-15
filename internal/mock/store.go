@@ -3,6 +3,7 @@ package mock
 import (
 	"fmt"
 	"gps/internal/model"
+	"gps/internal/store"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,14 +11,15 @@ import (
 	"time"
 )
 
+// Ensure Store satisfies the store.Store interface.
+var _ store.Store = (*Store)(nil)
+
 // Store is a thread-safe in-memory data store
 type Store struct {
 	mu sync.RWMutex
 
-	Silos   []model.Silo
-	Repos   []model.Repo
-	Modules []model.Module
-	Edges   []model.DepEdge
+	Silos []model.Silo
+	Repos []model.Repo
 
 	Plans   map[string]*model.ReleasePlan
 	History []model.HistoryEntry
@@ -28,43 +30,28 @@ type Store struct {
 	userCounter int
 
 	planCounter int
-
-	// SSE subscribers per plan
-	sseSubscribers map[string]map[chan model.SSEEvent]bool
-	sseMu          sync.RWMutex
 }
 
 // NewStoreWithTree initializes the store with silo/repo data fetched from
-// dalaran. Modules and the dependency graph are synthesized GPS-side from the
-// provided repos — dalaran's module info is not used.
+// dalaran. Modules and dependency edges are NOT generated globally — they
+// belong to individual plans and are created at plan creation/confirmation.
 func NewStoreWithTree(silos []model.Silo, repos []model.Repo) *Store {
-	modules, edges := GenerateModulesForRepos(repos)
-	return newStore(silos, repos, modules, edges)
+	return newStore(silos, repos)
 }
 
-func newStore(silos []model.Silo, repos []model.Repo, modules []model.Module, edges []model.DepEdge) *Store {
+func newStore(silos []model.Silo, repos []model.Repo) *Store {
 	s := &Store{
-		Silos:          silos,
-		Repos:          repos,
-		Modules:        modules,
-		Edges:          edges,
-		Plans:          make(map[string]*model.ReleasePlan),
-		Users:          make(map[string]*model.User),
-		Roles:          make(map[string]*model.Role),
-		sseSubscribers: make(map[string]map[chan model.SSEEvent]bool),
+		Silos: silos,
+		Repos: repos,
+		Plans: make(map[string]*model.ReleasePlan),
+		Users: make(map[string]*model.User),
+		Roles: make(map[string]*model.Role),
 	}
-
-	// Seed built-in roles + the embedded admin account (mock login bootstrap)
 	s.seedRoles()
 	s.seedAdmin()
-
-	// Pre-seed 3 historical releases
-	s.seedHistory()
-
 	return s
 }
 
-// seedRoles installs the three built-in roles.
 func (s *Store) seedRoles() {
 	s.Roles[model.RoleAdmin] = &model.Role{
 		Name:        model.RoleAdmin,
@@ -83,7 +70,6 @@ func (s *Store) seedRoles() {
 	}
 }
 
-// seedAdmin creates the embedded admin used by mock login during bootstrap.
 func (s *Store) seedAdmin() {
 	s.userCounter++
 	s.Users["admin"] = &model.User{
@@ -93,130 +79,6 @@ func (s *Store) seedAdmin() {
 		Roles:        []string{model.RoleAdmin},
 		AllowedSilos: "*",
 		CreatedAt:    time.Now(),
-	}
-}
-
-func (s *Store) seedHistory() {
-	now := time.Now()
-
-	// Seed 3 historical releases as full plans
-	configs := []struct {
-		numSilos int
-		failed   int
-		skipped  int
-		status   model.PlanStatus
-		hoursAgo int
-		durMin   int
-	}{
-		{3, 0, 0, model.PlanCompleted, 72, 5},
-		{5, 3, 5, model.PlanAborted, 48, 7},
-		{7, 2, 4, model.PlanCompleted, 24, 9},
-	}
-
-	for i, cfg := range configs {
-		planID := fmt.Sprintf("hist-%03d", i+1)
-		createdAt := now.Add(-time.Duration(cfg.hoursAgo) * time.Hour)
-		startedAt := createdAt.Add(10 * time.Second)
-		completedAt := createdAt.Add(time.Duration(cfg.durMin) * time.Minute)
-
-		siloIDs := []string{}
-		siloNames := []string{}
-		for j := 0; j < cfg.numSilos && j < len(s.Silos); j++ {
-			siloIDs = append(siloIDs, s.Silos[j].ID)
-			siloNames = append(siloNames, s.Silos[j].Name)
-		}
-
-		// Gather modules for these silos
-		siloSet := make(map[string]bool)
-		for _, id := range siloIDs {
-			siloSet[id] = true
-		}
-		var entries []model.PlanModuleEntry
-		for _, m := range s.Modules {
-			if !siloSet[m.SiloID] {
-				continue
-			}
-			repo := s.findRepo(m.RepoID)
-			silo := s.findSilo(m.SiloID)
-			repoName, siloName := "", ""
-			if repo != nil {
-				repoName = repo.Name
-			}
-			if silo != nil {
-				siloName = silo.Name
-			}
-			entries = append(entries, model.PlanModuleEntry{
-				ModuleID:      m.ID,
-				ModuleName:    m.Name,
-				RepoID:        m.RepoID,
-				RepoName:      repoName,
-				SiloID:        m.SiloID,
-				SiloName:      siloName,
-				PrevVersion:   m.CurrentVersion,
-				TargetVersion: bumpPatch(m.CurrentVersion),
-				Status:        model.StatusSuccess,
-			})
-		}
-
-		// Assign terminal statuses
-		failIdx := 0
-		skipIdx := 0
-		for j := len(entries) - 1; j >= 0; j-- {
-			if failIdx < cfg.failed {
-				entries[j].Status = model.StatusFailed
-				entries[j].ErrorMsg = "Build error: compilation failed in unit tests"
-				failIdx++
-			} else if skipIdx < cfg.skipped {
-				entries[j].Status = model.StatusSkipped
-				entries[j].ErrorMsg = "upstream dependency failed"
-				skipIdx++
-			}
-		}
-
-		succeeded := len(entries) - cfg.failed - cfg.skipped
-
-		// Compute dep graph for the plan
-		var moduleIDs []string
-		for _, e := range entries {
-			moduleIDs = append(moduleIDs, e.ModuleID)
-		}
-		edges := s.getEdgesForModulesLocked(moduleIDs)
-		sorted := TopologicalSort(moduleIDs, edges)
-
-		plan := &model.ReleasePlan{
-			ID:              planID,
-			SiloIDs:         siloIDs,
-			DmsBranch:       "release/2025Q2",
-			Concurrency:     4,
-			FailureStrategy: model.StrategyAbort,
-			MaxRetries:      3,
-			Status:          cfg.status,
-			Phase:           model.PhaseCompleted,
-			Modules:         entries,
-			DepGraph: &model.DependencyGraph{
-				Nodes:       moduleIDs,
-				Edges:       edges,
-				SortedOrder: sorted,
-			},
-			CreatedAt:   createdAt,
-			StartedAt:   &startedAt,
-			CompletedAt: &completedAt,
-		}
-		s.Plans[planID] = plan
-
-		s.History = append(s.History, model.HistoryEntry{
-			PlanID:       planID,
-			SiloIDs:      siloIDs,
-			SiloNames:    siloNames,
-			Status:       cfg.status,
-			TotalModules: len(entries),
-			Succeeded:    succeeded,
-			Failed:       cfg.failed,
-			Skipped:      cfg.skipped,
-			Duration:     fmt.Sprintf("%dm%ds", cfg.durMin, 30+i*10),
-			CreatedAt:    createdAt,
-			CompletedAt:  &completedAt,
-		})
 	}
 }
 
@@ -238,63 +100,6 @@ func (s *Store) GetReposBySilo(siloID string) []model.Repo {
 		}
 	}
 	return result
-}
-
-func (s *Store) GetModulesByRepo(repoID string) []model.Module {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var result []model.Module
-	for _, m := range s.Modules {
-		if m.RepoID == repoID {
-			result = append(result, m)
-		}
-	}
-	return result
-}
-
-func (s *Store) GetModulesBySilos(siloIDs []string) []model.Module {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	idSet := make(map[string]bool)
-	for _, id := range siloIDs {
-		idSet[id] = true
-	}
-	var result []model.Module
-	for _, m := range s.Modules {
-		if idSet[m.SiloID] {
-			result = append(result, m)
-		}
-	}
-	return result
-}
-
-func (s *Store) GetEdgesForModules(moduleIDs []string) []model.DepEdge {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	idSet := make(map[string]bool)
-	for _, id := range moduleIDs {
-		idSet[id] = true
-	}
-	var result []model.DepEdge
-	for _, e := range s.Edges {
-		if idSet[e.From] && idSet[e.To] {
-			result = append(result, e)
-		}
-	}
-	return result
-}
-
-// --- Lookup helpers ---
-
-func (s *Store) GetModule(id string) *model.Module {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, m := range s.Modules {
-		if m.ID == id {
-			return &m
-		}
-	}
-	return nil
 }
 
 func (s *Store) GetRepo(id string) *model.Repo {
@@ -319,7 +124,6 @@ func (s *Store) GetSilo(id string) *model.Silo {
 	return nil
 }
 
-// GetAllRepos returns every repo (across all silos), sorted by silo then name.
 func (s *Store) GetAllRepos() []model.Repo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -334,7 +138,6 @@ func (s *Store) GetAllRepos() []model.Repo {
 	return out
 }
 
-// UpdateRepoBranch sets the release branch for a repo. Returns the updated repo.
 func (s *Store) UpdateRepoBranch(repoID, branch string) (*model.Repo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -370,24 +173,28 @@ func (s *Store) CreatePlan(req model.CreatePlanRequest) *model.ReleasePlan {
 		maxRetries = 3
 	}
 
-	// Gather modules for selected silos
+	// Gather repos for selected silos.
 	siloSet := make(map[string]bool)
 	for _, id := range req.SiloIDs {
 		siloSet[id] = true
 	}
-
-	// Compute repo-level target versions (all modules in same repo share version)
-	repoTargetVersions := make(map[string]string)
-
-	var entries []model.PlanModuleEntry
-	for _, m := range s.Modules {
-		if !siloSet[m.SiloID] {
-			continue
+	var planRepos []model.Repo
+	for _, r := range s.Repos {
+		if siloSet[r.SiloID] {
+			planRepos = append(planRepos, r)
 		}
+	}
+
+	// Generate modules for this plan (GA-identified, with pending-external).
+	modules := GenerateModulesForPlan(planRepos, int64(s.planCounter*1000+42))
+
+	// Build plan entries.
+	repoTargetVersions := make(map[string]string)
+	var entries []model.PlanModuleEntry
+	for _, m := range modules {
 		repo := s.findRepo(m.RepoID)
 		silo := s.findSilo(m.SiloID)
-		repoName := ""
-		siloName := ""
+		repoName, siloName := "", ""
 		if repo != nil {
 			repoName = repo.Name
 		}
@@ -395,20 +202,28 @@ func (s *Store) CreatePlan(req model.CreatePlanRequest) *model.ReleasePlan {
 			siloName = silo.Name
 		}
 
-		// Compute target version once per repo
-		if _, ok := repoTargetVersions[m.RepoID]; !ok {
-			repoTargetVersions[m.RepoID] = bumpPatch(m.CurrentVersion)
+		// Compute target version (only for internal modules).
+		targetVersion := m.CurrentVersion
+		if m.Kind == model.KindInternal {
+			if _, ok := repoTargetVersions[m.RepoID]; !ok {
+				repoTargetVersions[m.RepoID] = bumpPatch(m.CurrentVersion)
+			}
+			targetVersion = repoTargetVersions[m.RepoID]
 		}
 
 		entries = append(entries, model.PlanModuleEntry{
 			ModuleID:      m.ID,
 			ModuleName:    m.Name,
+			Kind:          m.Kind,
+			Group:         m.Group,
+			Artifact:      m.Artifact,
+			GradlePath:    m.GradlePath,
 			RepoID:        m.RepoID,
 			RepoName:      repoName,
 			SiloID:        m.SiloID,
 			SiloName:      siloName,
 			PrevVersion:   m.CurrentVersion,
-			TargetVersion: repoTargetVersions[m.RepoID],
+			TargetVersion: targetVersion,
 			Status:        model.StatusPending,
 		})
 	}
@@ -456,9 +271,10 @@ func (s *Store) UpdateVersions(planID string, versions map[string]string) error 
 	if plan.Status != model.PlanDraft {
 		return fmt.Errorf("plan is not in DRAFT status")
 	}
-	// versions is keyed by repo_id -> new version
-	// Apply to all modules in that repo
 	for i := range plan.Modules {
+		if plan.Modules[i].Kind != model.KindInternal {
+			continue
+		}
 		if v, exists := versions[plan.Modules[i].RepoID]; exists {
 			plan.Modules[i].TargetVersion = v
 			plan.Modules[i].IsOverridden = true
@@ -477,21 +293,71 @@ func (s *Store) ConfirmPlan(planID string) error {
 	if plan.Status != model.PlanDraft {
 		return fmt.Errorf("plan is not in DRAFT status")
 	}
-	plan.Status = model.PlanConfirmed
 
-	// Compute dependency graph
-	var moduleIDs []string
-	for _, m := range plan.Modules {
-		moduleIDs = append(moduleIDs, m.ModuleID)
+	// Build module list and edges.
+	var modules []model.Module
+	for _, pe := range plan.Modules {
+		modules = append(modules, model.Module{
+			ID:             pe.ModuleID,
+			Group:          pe.Group,
+			Artifact:       pe.Artifact,
+			GradlePath:     pe.GradlePath,
+			RepoID:         pe.RepoID,
+			SiloID:         pe.SiloID,
+			Name:           pe.ModuleName,
+			Kind:           pe.Kind,
+			CurrentVersion: pe.PrevVersion,
+		})
 	}
-	edges := s.getEdgesForModulesLocked(moduleIDs)
-	sorted := TopologicalSort(moduleIDs, edges)
+	edges := GenerateEdges(modules)
+
+	var moduleIDs []string
+	for _, m := range modules {
+		moduleIDs = append(moduleIDs, m.ID)
+	}
+	sorted, hasCycle, cyclePath := model.TopologicalSort(moduleIDs, edges)
+	if hasCycle {
+		return fmt.Errorf("cycle detected: %v", cyclePath)
+	}
+
+	plan.Status = model.PlanConfirmed
 	plan.DepGraph = &model.DependencyGraph{
 		Nodes:       moduleIDs,
 		Edges:       edges,
 		SortedOrder: sorted,
 	}
 
+	// Pre-set pending-external modules to SUCCESS (they are confirmed at gate time).
+	for i := range plan.Modules {
+		if plan.Modules[i].Kind == model.KindPendingExternal {
+			plan.Modules[i].Status = model.StatusSuccess
+		}
+	}
+
+	return nil
+}
+
+func (s *Store) ConfirmPendingExternal(planID string, gas []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	plan, ok := s.Plans[planID]
+	if !ok {
+		return fmt.Errorf("plan not found")
+	}
+	if plan.Status != model.PlanConfirmed {
+		return fmt.Errorf("plan must be CONFIRMED to confirm external modules")
+	}
+
+	gaSet := make(map[string]bool)
+	for _, ga := range gas {
+		gaSet[ga] = true
+	}
+
+	for i := range plan.Modules {
+		if plan.Modules[i].Kind == model.KindPendingExternal && gaSet[plan.Modules[i].ModuleID] {
+			plan.Modules[i].Status = model.StatusSuccess
+		}
+	}
 	return nil
 }
 
@@ -548,7 +414,6 @@ func (s *Store) CompletePlan(planID string, status model.PlanStatus) {
 		now := time.Now()
 		plan.CompletedAt = &now
 
-		// Add to history
 		succeeded, failed, skipped := 0, 0, 0
 		for _, m := range plan.Modules {
 			switch m.Status {
@@ -568,7 +433,12 @@ func (s *Store) CompletePlan(planID string, status model.PlanStatus) {
 			}
 		}
 
-		duration := now.Sub(*plan.StartedAt)
+		var duration string
+		if plan.StartedAt != nil {
+			d := now.Sub(*plan.StartedAt)
+			duration = fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+		}
+
 		entry := model.HistoryEntry{
 			PlanID:       planID,
 			SiloIDs:      plan.SiloIDs,
@@ -578,7 +448,7 @@ func (s *Store) CompletePlan(planID string, status model.PlanStatus) {
 			Succeeded:    succeeded,
 			Failed:       failed,
 			Skipped:      skipped,
-			Duration:     fmt.Sprintf("%dm%ds", int(duration.Minutes()), int(duration.Seconds())%60),
+			Duration:     duration,
 			CreatedAt:    plan.CreatedAt,
 			CompletedAt:  &now,
 		}
@@ -624,7 +494,6 @@ func (s *Store) GetHistory() []model.HistoryEntry {
 	defer s.mu.RUnlock()
 	result := make([]model.HistoryEntry, len(s.History))
 	copy(result, s.History)
-	// Reverse to show newest first
 	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
 		result[i], result[j] = result[j], result[i]
 	}
@@ -633,14 +502,10 @@ func (s *Store) GetHistory() []model.HistoryEntry {
 
 // --- Users & RBAC ---
 
-// FindOrCreateUser returns an existing user by username, or creates a new one
-// with the default viewer role. Returns (user, isNew, error).
 func (s *Store) FindOrCreateUser(in *model.User) (*model.User, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if existing, ok := s.Users[in.Username]; ok {
-		// Refresh GitLab-sourced fields on re-login, keep roles/access.
 		if in.GitlabID != 0 {
 			existing.GitlabID = in.GitlabID
 		}
@@ -652,7 +517,6 @@ func (s *Store) FindOrCreateUser(in *model.User) (*model.User, bool, error) {
 		}
 		return existing, false, nil
 	}
-
 	s.userCounter++
 	u := &model.User{
 		ID:           s.userCounter,
@@ -702,24 +566,17 @@ func (s *Store) CountUsers() int {
 	return len(s.Users)
 }
 
-// ImportUser pre-registers a user (GitlabID=0) with optional roles and silo scope.
-// Identity is still managed by GitLab SSO: on first login FindOrCreateUser matches
-// by username and binds the GitLab info while preserving these roles.
-// Returns (created, error). created=false with nil error means the user already exists.
 func (s *Store) ImportUser(entry model.ImportUserEntry) (bool, error) {
 	username := strings.TrimSpace(entry.Username)
 	if username == "" {
 		return false, fmt.Errorf("empty username")
 	}
-
 	roles := entry.Roles
 	if len(roles) == 0 {
 		roles = []string{model.RoleViewer}
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if _, exists := s.Users[username]; exists {
 		return false, nil
 	}
@@ -728,7 +585,6 @@ func (s *Store) ImportUser(entry model.ImportUserEntry) (bool, error) {
 			return false, fmt.Errorf("unknown role: %s", r)
 		}
 	}
-
 	s.userCounter++
 	s.Users[username] = &model.User{
 		ID:           s.userCounter,
@@ -752,7 +608,6 @@ func (s *Store) GetRoles() []*model.Role {
 	return out
 }
 
-// SetUserRoles replaces a user's roles. Unknown role names are rejected.
 func (s *Store) SetUserRoles(userID int, roles []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -787,7 +642,6 @@ func (s *Store) SetUserAllowedSilos(userID int, allowedSilos string) error {
 	return fmt.Errorf("user not found")
 }
 
-// UserActions returns the union of actions granted by a user's roles.
 func (s *Store) UserActions(u *model.User) map[string]bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -800,42 +654,6 @@ func (s *Store) UserActions(u *model.User) map[string]bool {
 		}
 	}
 	return actions
-}
-
-// --- SSE ---
-
-func (s *Store) Subscribe(planID string) chan model.SSEEvent {
-	s.sseMu.Lock()
-	defer s.sseMu.Unlock()
-	ch := make(chan model.SSEEvent, 100)
-	if s.sseSubscribers[planID] == nil {
-		s.sseSubscribers[planID] = make(map[chan model.SSEEvent]bool)
-	}
-	s.sseSubscribers[planID][ch] = true
-	return ch
-}
-
-func (s *Store) Unsubscribe(planID string, ch chan model.SSEEvent) {
-	s.sseMu.Lock()
-	defer s.sseMu.Unlock()
-	if subs, ok := s.sseSubscribers[planID]; ok {
-		delete(subs, ch)
-		close(ch)
-	}
-}
-
-func (s *Store) Broadcast(planID string, event model.SSEEvent) {
-	s.sseMu.RLock()
-	defer s.sseMu.RUnlock()
-	if subs, ok := s.sseSubscribers[planID]; ok {
-		for ch := range subs {
-			select {
-			case ch <- event:
-			default:
-				// Drop if buffer full
-			}
-		}
-	}
 }
 
 // --- Helpers ---
@@ -856,20 +674,6 @@ func (s *Store) findSilo(id string) *model.Silo {
 		}
 	}
 	return nil
-}
-
-func (s *Store) getEdgesForModulesLocked(moduleIDs []string) []model.DepEdge {
-	idSet := make(map[string]bool)
-	for _, id := range moduleIDs {
-		idSet[id] = true
-	}
-	var result []model.DepEdge
-	for _, e := range s.Edges {
-		if idSet[e.From] && idSet[e.To] {
-			result = append(result, e)
-		}
-	}
-	return result
 }
 
 func bumpPatch(version string) string {

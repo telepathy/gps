@@ -4,17 +4,17 @@ import (
 	"net/http"
 	"strconv"
 
-	"gps/internal/mock"
 	"gps/internal/model"
+	"gps/internal/store"
 
 	"github.com/gin-gonic/gin"
 )
 
 type AdminHandler struct {
-	store *mock.Store
+	store store.Store
 }
 
-func NewAdminHandler(store *mock.Store) *AdminHandler {
+func NewAdminHandler(store store.Store) *AdminHandler {
 	return &AdminHandler{store: store}
 }
 

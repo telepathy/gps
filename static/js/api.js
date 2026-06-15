@@ -57,7 +57,6 @@ const API = {
     // Product tree
     getSilos() { return this.get('/api/silos'); },
     getReposBySilo(siloId) { return this.get(`/api/silos/${siloId}/repos`); },
-    getModulesByRepo(repoId) { return this.get(`/api/repos/${repoId}/modules`); },
 
     // Repos (full list + branch config)
     getRepos() { return this.get('/api/repos'); },

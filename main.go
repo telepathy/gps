@@ -10,20 +10,25 @@ import (
 	"gps/internal/handler"
 	"gps/internal/middleware"
 	"gps/internal/mock"
+	gpsmysql "gps/internal/mysql"
+	"gps/internal/sse"
+	"gps/internal/store"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 //go:embed all:static
 var staticFiles embed.FS
 
 func main() {
-	store := buildStore()
-	simulator := mock.NewSimulator(store)
+	dbStore, sseBroker := buildStore()
+	simulator := mock.NewSimulator(dbStore, sseBroker)
 
 	// --- Auth service ---
 	jwtSecret := os.Getenv("GPS_JWT_SECRET")
@@ -51,13 +56,13 @@ func main() {
 	}
 	authMiddleware := middleware.NewAuthMiddleware(authService)
 
-	siloHandler := handler.NewSiloHandler(store)
-	repoHandler := handler.NewRepoHandler(store)
-	planHandler := handler.NewPlanHandler(store)
-	releaseHandler := handler.NewReleaseHandler(store, simulator)
-	historyHandler := handler.NewHistoryHandler(store)
-	authHandler := handler.NewAuthHandler(store, authService)
-	adminHandler := handler.NewAdminHandler(store)
+	siloHandler := handler.NewSiloHandler(dbStore)
+	repoHandler := handler.NewRepoHandler(dbStore)
+	planHandler := handler.NewPlanHandler(dbStore)
+	releaseHandler := handler.NewReleaseHandler(dbStore, sseBroker, simulator)
+	historyHandler := handler.NewHistoryHandler(dbStore)
+	authHandler := handler.NewAuthHandler(dbStore, authService)
+	adminHandler := handler.NewAdminHandler(dbStore)
 
 	r := gin.Default()
 
@@ -84,7 +89,6 @@ func main() {
 		// Product tree
 		api.GET("/silos", siloHandler.ListSilos)
 		api.GET("/silos/:id/repos", siloHandler.GetReposBySilo)
-		api.GET("/repos/:id/modules", siloHandler.GetModulesByRepo)
 
 		// Repos (full list + release-branch config)
 		api.GET("/repos", repoHandler.ListRepos)
@@ -96,6 +100,7 @@ func main() {
 		api.GET("/plans/:id", planHandler.GetPlan)
 		api.PUT("/plans/:id/versions", planHandler.UpdateVersions)
 		api.POST("/plans/:id/confirm", planHandler.ConfirmPlan)
+		api.POST("/plans/:id/confirm-external", planHandler.ConfirmPendingExternal)
 
 		// Release execution
 		api.POST("/plans/:id/execute", releaseHandler.Execute)
@@ -149,11 +154,9 @@ func main() {
 	log.Fatal(r.Run(fmt.Sprintf(":%d", port)))
 }
 
-// buildStore loads the silo/repo product tree from dalaran. dalaran is the sole
-// source of silo/repo data, so a missing config or a failed fetch is fatal.
-// Modules and the dependency graph are always synthesized GPS-side (dalaran
-// module info is not used).
-func buildStore() *mock.Store {
+// buildStore loads the silo/repo product tree from dalaran, then creates either
+// a MySQL-backed or in-memory store depending on GPS_MYSQL_DSN.
+func buildStore() (store.Store, *sse.Broker) {
 	baseURL := os.Getenv("GPS_DALARAN_URL")
 	if baseURL == "" {
 		log.Fatal("GPS_DALARAN_URL is required: dalaran is the source of silo/repo data")
@@ -168,5 +171,20 @@ func buildStore() *mock.Store {
 		log.Fatal("dalaran returned no silos")
 	}
 	log.Printf("loaded product tree from dalaran: %d silos, %d repos (modules synthesized locally)", len(silos), len(repos))
-	return mock.NewStoreWithTree(silos, repos)
+
+	broker := sse.NewBroker()
+
+	dsn := os.Getenv("GPS_MYSQL_DSN")
+	if dsn != "" {
+		db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+		if err != nil {
+			log.Fatalf("mysql: failed to connect: %v", err)
+		}
+		log.Println("mysql: connected")
+		s := gpsmysql.NewStore(db, silos, repos)
+		return s, broker
+	}
+
+	log.Println("GPS_MYSQL_DSN not set; using in-memory store (data lost on restart)")
+	return mock.NewStoreWithTree(silos, repos), broker
 }

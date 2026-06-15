@@ -3,17 +3,17 @@ package handler
 import (
 	"net/http"
 
-	"gps/internal/mock"
 	"gps/internal/model"
+	"gps/internal/store"
 
 	"github.com/gin-gonic/gin"
 )
 
 type RepoHandler struct {
-	store *mock.Store
+	store store.Store
 }
 
-func NewRepoHandler(store *mock.Store) *RepoHandler {
+func NewRepoHandler(store store.Store) *RepoHandler {
 	return &RepoHandler{store: store}
 }
 

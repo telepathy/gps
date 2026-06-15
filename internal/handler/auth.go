@@ -5,18 +5,18 @@ import (
 	"net/http"
 
 	"gps/internal/auth"
-	"gps/internal/mock"
 	"gps/internal/model"
+	"gps/internal/store"
 
 	"github.com/gin-gonic/gin"
 )
 
 type AuthHandler struct {
-	store       *mock.Store
+	store       store.Store
 	authService *auth.Service
 }
 
-func NewAuthHandler(store *mock.Store, authService *auth.Service) *AuthHandler {
+func NewAuthHandler(store store.Store, authService *auth.Service) *AuthHandler {
 	return &AuthHandler{store: store, authService: authService}
 }
 

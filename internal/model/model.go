@@ -20,13 +20,25 @@ type Repo struct {
 	ReleaseBranch string `json:"release_branch"`
 }
 
+// Module represents a Gradle subproject identified by GA (group:artifact).
+// Modules are plan-scoped — they are generated at plan creation time, not globally.
 type Module struct {
-	ID             string `json:"id"`
-	RepoID         string `json:"repo_id"`
-	SiloID         string `json:"silo_id"`
-	Name           string `json:"name"`
-	CurrentVersion string `json:"current_version"`
+	ID             string `json:"id"`              // = GA "group:artifact"
+	Group          string `json:"group"`            // Maven group (e.g. "com.csdc.spot")
+	Artifact       string `json:"artifact"`         // Maven artifact (= akasha join key)
+	GradlePath     string `json:"gradle_path"`      // ":core:api", empty for pending-external
+	RepoID         string `json:"repo_id"`          // empty for pending-external
+	SiloID         string `json:"silo_id"`          // empty for pending-external
+	Name           string `json:"name"`             // display name
+	Kind           string `json:"kind"`             // "internal" | "pending-external"
+	CurrentVersion string `json:"current_version"`  // internal: release version; pending-external: confirmed akasha version
 }
+
+// Node kind constants.
+const (
+	KindInternal        = "internal"
+	KindPendingExternal = "pending-external"
+)
 
 // RepoView is a Repo enriched with its silo name and a per-request CanEdit flag
 // (whether the current user may configure this repo's release branch).
@@ -43,15 +55,18 @@ type UpdateRepoBranchRequest struct {
 
 // --- Dependency Graph ---
 
+// DepEdge represents a dependency edge between two modules (GA nodes).
+// From is depended upon by To (To depends on From, so From must release first).
 type DepEdge struct {
-	From string `json:"from"` // module_id depended upon
-	To   string `json:"to"`   // module_id that depends on From
+	From      string `json:"from"`       // GA of the depended-upon module
+	To        string `json:"to"`         // GA of the dependent module
+	CrossRepo bool   `json:"cross_repo"` // true = cross-repo (via akasha); false = repo-internal
 }
 
 type DependencyGraph struct {
-	Nodes       []string  `json:"nodes"`
+	Nodes       []string  `json:"nodes"`        // GA list
 	Edges       []DepEdge `json:"edges"`
-	SortedOrder []string  `json:"sorted_order"`
+	SortedOrder []string  `json:"sorted_order"` // GA topo order
 }
 
 // --- Release Plan ---
@@ -81,11 +96,12 @@ const (
 type ReleasePhase string
 
 const (
-	PhaseNone      ReleasePhase = "NONE"
-	PhaseTagging   ReleasePhase = "TAGGING"
-	PhaseAnalyzing ReleasePhase = "ANALYZING"
-	PhaseReleasing ReleasePhase = "RELEASING"
-	PhaseCompleted ReleasePhase = "COMPLETED"
+	PhaseNone                    ReleasePhase = "NONE"
+	PhaseTagging                 ReleasePhase = "TAGGING"
+	PhaseAnalyzing               ReleasePhase = "ANALYZING"
+	PhaseGatePendingExternal     ReleasePhase = "GATE_PENDING_EXTERNAL"
+	PhaseReleasing               ReleasePhase = "RELEASING"
+	PhaseCompleted               ReleasePhase = "COMPLETED"
 )
 
 type FailureStrategy string
@@ -96,12 +112,17 @@ const (
 	StrategyRetry FailureStrategy = "RETRY"
 )
 
+// PlanModuleEntry is a per-module record within a release plan.
 type PlanModuleEntry struct {
-	ModuleID      string       `json:"module_id"`
+	ModuleID      string       `json:"module_id"`     // = GA
 	ModuleName    string       `json:"module_name"`
-	RepoID        string       `json:"repo_id"`
+	Kind          string       `json:"kind"`          // "internal" | "pending-external"
+	Group         string       `json:"group"`
+	Artifact      string       `json:"artifact"`
+	GradlePath    string       `json:"gradle_path"`
+	RepoID        string       `json:"repo_id"`       // empty for pending-external
 	RepoName      string       `json:"repo_name"`
-	SiloID        string       `json:"silo_id"`
+	SiloID        string       `json:"silo_id"`       // empty for pending-external
 	SiloName      string       `json:"silo_name"`
 	PrevVersion   string       `json:"prev_version"`
 	TargetVersion string       `json:"target_version"`
@@ -158,13 +179,13 @@ type PhaseChangeEvent struct {
 }
 
 type ModuleStatusEvent struct {
-	ModuleID string       `json:"module_id"`
+	ModuleID string       `json:"module_id"` // GA
 	Status   ModuleStatus `json:"status"`
 	ErrorMsg string       `json:"error_msg,omitempty"`
 }
 
 type ModuleLogEvent struct {
-	ModuleID  string `json:"module_id"`
+	ModuleID  string `json:"module_id"` // GA
 	Line      string `json:"line"`
 	Timestamp int64  `json:"timestamp"`
 }
@@ -187,7 +208,13 @@ type CreatePlanRequest struct {
 }
 
 type UpdateVersionsRequest struct {
-	Versions map[string]string `json:"versions"` // module_id -> version
+	Versions map[string]string `json:"versions"` // repo_id -> version
+}
+
+// ConfirmExternalRequest confirms that pending-external modules exist at
+// the correct version in the specified akasha branch.
+type ConfirmExternalRequest struct {
+	GAs []string `json:"gas"` // list of GA strings to confirm
 }
 
 // --- History ---

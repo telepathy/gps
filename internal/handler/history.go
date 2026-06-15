@@ -1,17 +1,17 @@
 package handler
 
 import (
-	"gps/internal/mock"
+	"gps/internal/store"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
 type HistoryHandler struct {
-	store *mock.Store
+	store store.Store
 }
 
-func NewHistoryHandler(store *mock.Store) *HistoryHandler {
+func NewHistoryHandler(store store.Store) *HistoryHandler {
 	return &HistoryHandler{store: store}
 }
 

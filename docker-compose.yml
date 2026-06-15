@@ -1,0 +1,15 @@
+services:
+  mysql:
+    image: mysql:8.0.25
+    container_name: gps-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: gps123456
+      MYSQL_DATABASE: gps
+      ALLOW_EMPTY_PASSWORD: "no"
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/bitnami/mysql/data
+
+volumes:
+  mysql_data:

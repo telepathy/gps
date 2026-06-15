@@ -5,18 +5,21 @@ import (
 	"fmt"
 	"gps/internal/mock"
 	"gps/internal/model"
+	"gps/internal/sse"
+	"gps/internal/store"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
 type ReleaseHandler struct {
-	store     *mock.Store
+	store     store.Store
+	broker    *sse.Broker
 	simulator *mock.Simulator
 }
 
-func NewReleaseHandler(store *mock.Store, simulator *mock.Simulator) *ReleaseHandler {
-	return &ReleaseHandler{store: store, simulator: simulator}
+func NewReleaseHandler(store store.Store, broker *sse.Broker, simulator *mock.Simulator) *ReleaseHandler {
+	return &ReleaseHandler{store: store, broker: broker, simulator: simulator}
 }
 
 // authorizeRelease enforces the release action plus silo-scope for a plan.
@@ -63,8 +66,8 @@ func (h *ReleaseHandler) SSEEvents(c *gin.Context) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch := h.store.Subscribe(planID)
-	defer h.store.Unsubscribe(planID, ch)
+	ch := h.broker.Subscribe(planID)
+	defer h.broker.Unsubscribe(planID, ch)
 
 	clientGone := c.Request.Context().Done()
 

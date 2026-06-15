@@ -4,15 +4,15 @@ import (
 	"net/http"
 	"strings"
 
-	"gps/internal/mock"
 	"gps/internal/model"
+	"gps/internal/store"
 
 	"github.com/gin-gonic/gin"
 )
 
 // currentUser resolves the authenticated user from the gin context (set by
 // RequireAuth). Returns nil if absent or unknown.
-func currentUser(c *gin.Context, store *mock.Store) *model.User {
+func currentUser(c *gin.Context, store store.Store) *model.User {
 	uid, ok := c.Get("user_id")
 	if !ok {
 		return nil
@@ -26,7 +26,7 @@ func currentUser(c *gin.Context, store *mock.Store) *model.User {
 
 // requireAction enforces that the current user's roles grant the given action.
 // On failure it writes a 401/403 response and returns false.
-func requireAction(c *gin.Context, store *mock.Store, action string) bool {
+func requireAction(c *gin.Context, store store.Store, action string) bool {
 	u := currentUser(c, store)
 	if u == nil {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
