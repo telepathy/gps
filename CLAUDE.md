@@ -10,81 +10,57 @@ The design document (`design.md`) is the source of truth for all architectural d
 
 ## Build & Run
 
+Requires **Go 1.25+**. Uses Gin web framework and embeds the frontend via `//go:embed`.
+
 ```bash
-go build -o gps-server .    # Build single binary (frontend embedded via //go:embed)
+go build -o gps-server .    # Build single binary (frontend embedded)
 ./gps-server                 # Start server at http://localhost:4777
 go run main.go               # Build and run in one step
 ```
 
 No separate frontend build step needed — static files are embedded at compile time.
 
-### Auth config (optional environment variables)
-
-```bash
-GPS_JWT_SECRET           # JWT signing secret; if unset an ephemeral one is generated (sessions reset on restart)
-GPS_GITLAB_URL           # GitLab instance, e.g. https://gitlab.internal.com
-GPS_GITLAB_APP_ID        # OAuth app ID; setting this enables GitLab SSO
-GPS_GITLAB_APP_SECRET    # OAuth app secret
-GPS_GITLAB_CALLBACK_URL  # Callback, points to /auth/gitlab/callback
-```
-
-When GitLab is not configured, login falls back to mock login with the built-in `admin` account.
-
 ## Architecture
 
 ### Backend (Go + Gin)
 
 ```
-main.go                         # Gin server, //go:embed, auth wiring, route registration
+main.go                         # Gin server, //go:embed, route registration
 internal/
-├── model/
-│   ├── model.go                # All domain structs (Silo, Repo, Module, ReleasePlan, etc.)
-│   └── user.go                 # User, Role, GitlabUser, auth request structs + action/role consts
-├── auth/
-│   └── service.go              # GitLab OAuth2 (resty, InsecureSkipVerify) + HS256 JWT generate/parse
-├── dalaran/
-│   └── client.go               # Fetches silo/repo tree from dalaran GET /api/v1/silos; skips non-devops repos (devopsOpt=false); module info ignored
-├── middleware/
-│   └── auth.go                 # RequireAuth: JWT from Bearer header or cookie → gin context
+├── model/model.go              # All domain structs (Silo, Repo, Module, ReleasePlan, etc.)
 ├── mock/
-│   ├── generator.go            # Synthesizes modules + dependency DAG for dalaran-sourced repos (silo/repo are NOT mocked)
-│   ├── store.go                # Thread-safe in-memory store (sync.RWMutex), SSE pub/sub, users/roles + seeded admin
+│   ├── generator.go            # Deterministic mock data (30 silos, 47 repos, 104 modules + DAG)
+│   ├── store.go                # Thread-safe in-memory store (sync.RWMutex), SSE pub/sub
 │   └── simulator.go            # Goroutine-based release simulator (4-phase state machine)
 └── handler/
     ├── silo.go                 # GET /api/silos, repos, modules
-    ├── repo.go                  # GET /api/repos (full list + can_edit), PUT /api/repos/:id/branch
-    ├── plan.go                 # CRUD for release plans (write ops: create/release action + silo-scope checks)
-    ├── release.go              # Execute, progress polling, SSE event stream, abort (release action + silo-scope)
-    ├── history.go              # Historical release records
-    ├── auth.go                 # Login page, mock-login, GitLab callback, logout, current-user
-    ├── admin.go                # User/role management (requires manage action)
-    └── rbac.go                 # currentUser / requireAction / canReleaseSilos helpers
+    ├── plan.go                 # CRUD for release plans
+    ├── release.go              # Execute, progress polling, SSE event stream, abort, retry
+    └── history.go              # Historical release records
 ```
 
 ### Frontend (Vanilla JS SPA)
 
 ```
 static/
-├── index.html                  # SPA shell with hash-based routing (#/), nav user area + admin link
+├── index.html                  # SPA shell with hash-based routing (#/)
 ├── css/style.css               # Dark theme, CSS variables, full component styles
 ├── js/
-│   ├── app.js                  # Hash router + lifecycle; checkAuth() gate, role-based nav/route gating
-│   ├── api.js                  # Fetch wrapper (credentials + 401→/auth/login) + SSE + auth/admin methods
+│   ├── app.js                  # Hash router + page lifecycle management
+│   ├── api.js                  # Fetch wrapper + SSE subscription + utility functions
 │   ├── pages/
 │   │   ├── plan-create.js      # Silo selector → module preview → create plan
 │   │   ├── version-confirm.js  # Collapsible grouped table, inline version editing
 │   │   ├── release-monitor.js  # DAG visualization + real-time logs + phase stepper (core page)
-│   │   ├── release-history.js  # Historical release list
-│   │   ├── repos.js            # Flat repo table: silo code, repo name (link → SSH-to-HTTPS web URL), release branch, action; silo-code filter; branch editable only when can_edit
-│   │   └── admin.js            # User role & silo-scope management + batch import (admin only)
+│   │   └── release-history.js  # Historical release list
 │   └── components/
 │       ├── dag-graph.js        # Pure SVG DAG with pan/zoom (no D3 dependency)
 │       └── log-panel.js        # Filterable real-time log panel
 ```
 
-### External Systems (from design.md)
+### External Systems (currently mocked)
 
-GPS coordinates four external systems (currently mocked):
+GPS coordinates four external systems (all mocked in `internal/mock/`):
 - **PTIS** (Product Tree Info System): silo→repo→module hierarchy, release branches, version history
 - **DAS** (Dependency Analysis System): inter-module dependency graph from Gradle
 - **CI/CD** (Release Pipeline): per-module build/test/publish, polled via pipeline_id
@@ -108,372 +84,45 @@ GPS coordinates four external systems (currently mocked):
 - **DAG is edge-driven**: dependency graph is a flat list of `(from, to)` module-ID tuples with no layer metadata; the frontend computes layout depth via longest-path BFS from roots
 - **Topo-sort + concurrent pool** (not layer-based grouping): any module whose upstream deps are done can start immediately
 - **SSE for real-time updates**: unidirectional push from simulator to browser, simpler than WebSocket
-- **Silo/repo from dalaran, modules mocked**: silo & repo data is fetched from dalaran's `GET /api/v1/silos` at startup (`GPS_DALARAN_URL` is required — a missing config or failed fetch is fatal). Only repos with `devopsOpt=true` are kept; repo `Name` is derived from the URL's last segment and `ReleaseBranch` defaults to `main`. Modules and the dependency DAG are always synthesized GPS-side (fixed seed 42) since dalaran's module info is intentionally not used.
-- **GitLab SSO, GPS-internal RBAC**: identity is read-only from a self-signed GitLab (username only, TLS skipped); roles/permissions are owned by GPS, decoupled from GitLab org/project permissions
+- **Mock data uses fixed seed (42)**: deterministic, reproducible data generation
 
-## API Endpoints
+## API Routes (defined in `main.go`)
 
-All `/api/*` routes are behind the `RequireAuth` middleware (401 if no valid JWT). Write operations add role + silo-scope checks (see Auth & RBAC below). `/auth/*` routes are public.
+All routes are under `/api`. The handlers delegate to `mock.Store` (thread-safe in-memory store) and `mock.Simulator` (goroutine-based release execution).
 
-### Auth & Users
+| Group | Routes | Handler |
+|-------|--------|---------|
+| Product tree | `GET /api/silos`, `/api/silos/:id/repos`, `/api/repos/:id/modules` | `SiloHandler` |
+| Plans | `POST/GET /api/plans`, `GET /api/plans/:id`, `PUT /api/plans/:id/versions`, `POST /api/plans/:id/confirm` | `PlanHandler` |
+| Execution | `POST /api/plans/:id/execute`, `GET /api/plans/:id/progress`, `GET /api/plans/:id/events` (SSE), `POST /api/plans/:id/abort`, `POST /api/plans/:id/modules/:mid/retry` | `ReleaseHandler` |
+| History | `GET /api/history`, `GET /api/history/:id` | `HistoryHandler` |
 
-| Method | Path | Auth | Purpose | Used By |
-|--------|------|------|---------|---------|
-| GET | /auth/login | public | Standalone login page (GitLab button + mock-login form) | browser |
-| POST | /auth/mock-login | public | Login by username (built-in `admin`, no GitLab) | login page |
-| GET | /auth/gitlab/callback | public | GitLab OAuth2 callback → JWT cookie | GitLab |
-| GET | /api/current-user | login | Current user (with roles) | app.js checkAuth |
-| POST | /api/logout | login | Clear session cookie | nav logout |
-| GET | /api/admin/users | manage | List users | admin page |
-| GET | /api/admin/roles | manage | List roles | admin page |
-| POST | /api/admin/users/import | manage | Batch pre-register users (`{users:[{username,email,roles,allowed_silos}]}`) → `{created,skipped,failed}` | admin page |
-| PUT | /api/admin/users/:uid/roles | manage | Set a user's roles | admin page |
-| PUT | /api/admin/users/:uid/access | manage | Set a user's `allowed_silos` | admin page |
-
-**Auth & RBAC model**: Identity comes from a self-signed GitLab instance via OAuth2 (`scope=read_user`, TLS verification skipped, only `username` consumed); first-time GitLab users get the `viewer` role. Session is an HS256 JWT (24h) in an HttpOnly cookie. Three built-in roles map to actions: `admin` (view+create+release+manage, bypasses silo-scope), `releaser` (view+create+release within `allowed_silos`), `viewer` (view only). `allowed_silos` is `"*"` / `""` / comma-separated silo IDs. Users/roles live in the in-memory store (seeded `admin` with `allowed_silos="*"`); lost on restart.
-
-**User import (pre-register + SSO bind)**: Admins can batch pre-register usernames (with optional roles/`allowed_silos`); imported users have `GitlabID=0`. Identity is still managed by GitLab SSO — on first GitLab login `FindOrCreateUser` matches by username, binds the GitLab info (id/email/avatar) and **preserves the imported roles & silo scope**. Re-importing an existing username is skipped (never overwrites). Empty roles default to `viewer`; unknown roles are rejected.
-
-### Product Tree
-
-| Method | Path | Purpose | Used By |
-|--------|------|---------|---------|
-| GET | /api/silos | List all silos (from dalaran) | plan-create |
-| GET | /api/silos/:id/repos | Repos under a silo | plan-create |
-| GET | /api/repos/:id/modules | Modules under a repo | plan-create |
-
-### Repos
-
-| Method | Path | Auth | Purpose | Used By |
-|--------|------|------|---------|---------|
-| GET | /api/repos | login | All repos as `RepoView` (silo_name + per-user `can_edit`) | repos page |
-| PUT | /api/repos/:id/branch | release + silo-scope | Set a repo's release branch (`{release_branch}`) | repos page |
-
-`can_edit` is true when the user has the `release` action **and** the repo's silo is within the user's `allowed_silos`. Viewing the full list only requires login; the branch write is hard-checked server-side (403 otherwise).
-
-### Release Plans
-
-| Method | Path | Purpose | Used By |
-|--------|------|---------|---------|
-| POST | /api/plans | Create release plan (auto-computes patch-bump versions per repo) | plan-create |
-| GET | /api/plans | List all plans | plans list page |
-| GET | /api/plans/:id | Plan detail with modules and dep_graph | version-confirm, release-monitor |
-| PUT | /api/plans/:id/versions | Override target versions by repo_id (`{versions: {repo_id: "x.y.z"}}`) | version-confirm |
-| POST | /api/plans/:id/confirm | Confirm plan, triggers topo-sort to build dep_graph | version-confirm |
-
-### Release Execution
-
-| Method | Path | Purpose | Used By |
-|--------|------|---------|---------|
-| POST | /api/plans/:id/execute | Start async execution | version-confirm |
-| GET | /api/plans/:id/progress | Poll execution progress (stats + per-module status) | release-monitor |
-| GET | /api/plans/:id/events | SSE real-time event stream | release-monitor |
-| POST | /api/plans/:id/abort | Abort running release | release-monitor |
-| POST | /api/plans/:id/modules/:mid/retry | Retry a single failed module | release-monitor |
-
-### History
-
-| Method | Path | Purpose | Used By |
-|--------|------|---------|---------|
-| GET | /api/history | List completed releases (newest first) | release-history |
-| GET | /api/history/:id | Historical release detail (full plan data) | release-history → monitor |
-
-### SSE Event Types (GET /api/plans/:id/events)
-
-| type | data | Purpose |
-|------|------|---------|
-| phase_change | `{phase}` | Phase transition: TAGGING → ANALYZING → RELEASING → COMPLETED |
-| module_status | `{module_id, status, error_msg?}` | Module state change, drives DAG node colors |
-| module_log | `{module_id, line, timestamp}` | Build log line, appended to log panel |
-| plan_complete | `{status, succeeded, failed, skipped}` | Release finished, stops SSE and polling |
+SSE event types: `phase_change`, `module_status`, `module_log`, `plan_complete`
 
 ## External System Interfaces
 
-GPS is a **coordination layer** — it does not directly perform Git operations, build code, or manage artifacts. All actual work is delegated to four external systems. Below defines the boundary: which data GPS owns vs. which it fetches/pushes externally, and the interface contracts for each external system.
-
-### System Boundary Overview
+GPS is a **coordination layer** — it does not directly perform Git operations, build code, or manage artifacts. All actual work is delegated to four external systems. See `design.md` §5 for full interface contracts.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     GPS (本系统)                              │
-│                                                             │
 │  Owns:  ReleasePlan, execution state, phase orchestration,  │
 │         concurrency pool, failure strategy, SSE push,       │
 │         version override (human input), topo-sort result    │
-│                                                             │
-│  Does NOT own:  product tree data, source code, Git repos,  │
-│         dependency relationships, build/test execution,     │
-│         artifact publishing, artifact version registry      │
+│  Does NOT own:  product tree, source code, Git repos,       │
+│         dependency relationships, build/test, artifacts     │
 └────┬──────────┬──────────────┬──────────────┬───────────────┘
-     │          │              │              │
      ▼          ▼              ▼              ▼
    PTIS        DAS           CI/CD          DMS
- 产品树信息   依赖分析系统    发版流水线     依赖管理系统
 ```
 
-### Phase-to-External-System Mapping
-
-| Release Phase | External System Called | Purpose |
-|---------------|----------------------|---------|
+| Phase | External System | Purpose |
+|-------|----------------|---------|
 | Phase 0 — Preparation | PTIS (read) | Fetch silo→repo→module tree, current versions |
 | Phase 1 — Tagging | PTIS (write, Git ops) | Clone repo, create tag, push |
 | Phase 2 — Dep Analysis | DAS (read) | Fetch dependency edges for module set |
 | Phase 3 — Pool Release | CI/CD (trigger + poll) | Trigger per-module pipeline, poll status |
 | Phase 3 — Pool Release (on success) | DMS (write) | Register new artifact version |
-| Module Retry | CI/CD (trigger + poll) | Re-trigger pipeline for failed module |
-
----
-
-### PTIS — Product Tree Info System (产品树信息系统)
-
-Maintains the silo→repo→module hierarchy, Git repo metadata, and version history.
-
-#### PTIS-1: Get Product Tree
-
-```
-GPS → PTIS
-GET /ptis/api/v1/silos/{silo_id}/tree
-
-Response 200:
-{
-  "silo": {
-    "id": "silo-001",
-    "name": "payment",
-    "desc": "支付核心服务"
-  },
-  "repos": [
-    {
-      "id": "repo-001",
-      "name": "payment-core",
-      "url": "git@gitlab.internal.com:platform/payment-core.git",
-      "release_branch": "release/2025Q2",
-      "modules": [
-        { "id": "mod-001", "name": "payment-core-model" },
-        { "id": "mod-002", "name": "payment-core-api" }
-      ]
-    }
-  ]
-}
-```
-
-**GPS mock mapping**: `GET /api/silos` + `GET /api/silos/:id/repos` + `GET /api/repos/:id/modules`
-
-#### PTIS-2: Get Latest Released Version
-
-```
-GPS → PTIS
-GET /ptis/api/v1/repos/{repo_id}/version?branch={release_branch}
-
-Response 200:
-{
-  "repo_id": "repo-001",
-  "version": "1.2.3",
-  "released_at": "2025-04-10T08:30:00Z"
-}
-```
-
-**GPS mock mapping**: Embedded in `Module.CurrentVersion` field at data generation time. Same version for all modules in one repo.
-
-#### PTIS-3: Create Tag
-
-```
-GPS → PTIS
-POST /ptis/api/v1/repos/{repo_id}/tags
-
-Request:
-{
-  "branch": "release/2025Q2",
-  "tag": "v1.2.4",
-  "message": "Release v1.2.4 by GPS plan-001"
-}
-
-Response 200:
-{
-  "repo_id": "repo-001",
-  "tag": "v1.2.4",
-  "commit_sha": "abc123..."
-}
-```
-
-**GPS mock mapping**: Simulated in `simulator.phaseTagging()` — sets modules to TAGGED status after 300-800ms per repo.
-
-#### PTIS-4: Record New Version
-
-```
-GPS → PTIS
-POST /ptis/api/v1/repos/{repo_id}/versions
-
-Request:
-{
-  "version": "1.2.4",
-  "plan_id": "plan-001",
-  "released_at": "2025-05-13T10:00:00Z"
-}
-
-Response 200:
-{ "status": "recorded" }
-```
-
-**GPS mock mapping**: Not explicitly mocked. Would be called after each module's successful release in Phase 3.
-
----
-
-### DAS — Dependency Analysis System (依赖分析系统)
-
-Analyzes inter-module dependency relationships from Gradle build files. Returns a flat list of `(from, to)` tuples — no layers, no grouping.
-
-#### DAS-1: Get Dependency Graph
-
-```
-GPS → DAS
-POST /das/api/v1/dependencies/analyze
-
-Request:
-{
-  "module_ids": ["mod-001", "mod-002", "mod-003", ...],
-  "branch": "release/2025Q2"
-}
-
-Response 200:
-{
-  "edges": [
-    { "from": "mod-001", "to": "mod-003" },
-    { "from": "mod-001", "to": "mod-005" },
-    { "from": "mod-002", "to": "mod-005" }
-  ]
-}
-```
-
-Semantics: `from` is depended upon by `to` — i.e. `to` depends on `from`, so `from` must be released before `to`.
-
-**GPS mock mapping**: `generator.generateEdges()` produces these at startup; `store.ConfirmPlan()` filters to plan scope, runs `TopologicalSort()`, and stores the result in `plan.DepGraph`.
-
----
-
-### CI/CD — Release Pipeline (发版流水线)
-
-Executes the actual build/test/publish for a single module. GPS triggers the pipeline and polls for completion.
-
-#### CICD-1: Trigger Pipeline
-
-```
-GPS → CI/CD
-POST /cicd/api/v1/pipelines
-
-Request:
-{
-  "module_id": "mod-003",
-  "repo_url": "git@gitlab.internal.com:platform/payment-core.git",
-  "branch": "release/2025Q2",
-  "tag": "v1.2.4",
-  "version": "1.2.4"
-}
-
-Response 200:
-{
-  "pipeline_id": "pipe-20250513-mod003-001",
-  "status": "PENDING"
-}
-```
-
-**GPS mock mapping**: Simulated in `simulator.releaseModule()` — sets module to RELEASING, emits log lines with 400-800ms intervals.
-
-#### CICD-2: Poll Pipeline Status
-
-```
-GPS → CI/CD
-GET /cicd/api/v1/pipelines/{pipeline_id}/status
-
-Response 200:
-{
-  "pipeline_id": "pipe-20250513-mod003-001",
-  "status": "RUNNING",          // PENDING | RUNNING | SUCCESS | FAILED
-  "started_at": "2025-05-13T10:01:00Z",
-  "finished_at": null,
-  "error_message": null,
-  "logs_url": "https://ci.internal.com/pipelines/12345/logs"
-}
-```
-
-Status transitions: `PENDING → RUNNING → SUCCESS` or `PENDING → RUNNING → FAILED`
-
-**GPS mock mapping**: Simulated inline — `releaseModule()` walks through log lines, randomly decides success/failure, then broadcasts `module_status` SSE events.
-
-#### CICD-3: Retry Pipeline (same as trigger)
-
-Module retry reuses CICD-1 with the same parameters. The CI/CD system creates a new pipeline_id.
-
-**GPS mock mapping**: `simulator.RetryModule()` → calls `releaseModule()` with `maxRetries=0`.
-
----
-
-### DMS — Dependency Management System (依赖管理系统)
-
-Manages artifact version coordinates in Maven/Gradle repositories (Nexus, Artifactory, or an internal version registry).
-
-#### DMS-1: Register Artifact Version
-
-```
-GPS → DMS
-POST /dms/api/v1/artifacts/{module_id}/versions
-
-Request:
-{
-  "module_id": "mod-003",
-  "version": "1.2.4",
-  "branch": "release/2025Q2",
-  "artifact_coords": {
-    "group_id": "com.platform.payment",
-    "artifact_id": "payment-core-model",
-    "packaging": "jar"
-  }
-}
-
-Response 200:
-{ "status": "registered" }
-```
-
-Called after each module's pipeline succeeds in Phase 3. This allows downstream modules to resolve the newly published version during their own build.
-
-**GPS mock mapping**: Not explicitly mocked. Would be called between a module's SUCCESS status and unblocking its downstream dependents.
-
-#### DMS-2: Query Current Version (optional)
-
-```
-GPS → DMS
-GET /dms/api/v1/artifacts/{module_id}/versions/latest?branch={branch}
-
-Response 200:
-{
-  "module_id": "mod-003",
-  "version": "1.2.3",
-  "branch": "release/2025Q2",
-  "published_at": "2025-04-10T08:35:00Z"
-}
-```
-
-Optional pre-release check. Could be used to verify DMS state matches PTIS before starting.
-
-**GPS mock mapping**: Not mocked. Version info comes from PTIS (Module.CurrentVersion).
-
----
-
-### GPS Internal vs External — Summary
-
-| Data | Owner | GPS Reads From | GPS Writes To |
-|------|-------|---------------|---------------|
-| Silo/Repo/Module hierarchy | PTIS | Phase 0 | — |
-| Git repo URL, release branch | PTIS | Phase 0 | — |
-| Current released version (per repo) | PTIS | Phase 0 | Phase 3 (record new) |
-| Git tags | PTIS (Git) | — | Phase 1 (create tag) |
-| Module dependency edges `(from, to)` | DAS | Phase 2 | — |
-| Topo-sorted release order | **GPS** | — | — |
-| ReleasePlan, version overrides | **GPS** | — | — |
-| Execution state, phase, concurrency | **GPS** | — | — |
-| Build/test/publish execution | CI/CD | Phase 3 (poll) | Phase 3 (trigger) |
-| Artifact version registry | DMS | — | Phase 3 (register) |
-| SSE events, progress stats | **GPS** | — | — |
-| Failure strategy, retry decisions | **GPS** | — | — |
 
 ## GPS Internal Data Model (DDL)
 
