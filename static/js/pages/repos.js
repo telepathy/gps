@@ -9,19 +9,17 @@ const ReposPage = {
     // git@host:group/name.git                -> https://host/group/name
     _webURL(url) {
         if (!url) return '';
-        let s = url.trim();
+        const s = url.trim();
         if (/^https?:\/\//i.test(s)) return s.replace(/\.git$/, '');
-        s = s.replace(/^ssh:\/\//i, '');           // drop ssh:// scheme
-        s = s.replace(/^git@/i, '');               // drop git@ user
-        s = s.replace(/\.git$/i, '');              // drop .git suffix
-        // scp-style "host:group/name" -> "host/group/name"
-        if (!s.includes('/') && s.includes(':')) {
-            s = s.replace(':', '/');
-        } else {
-            s = s.replace(/^([^/]+):(\d+)\//, '$1/'); // drop :port before path
-            s = s.replace(/^([^/]+):/, '$1/');        // scp form with path
+        if (s.startsWith('ssh://git@codeup')) {
+            const repo = s.split(':9022')[1].replace('.git', '');
+            return 'http://codeup.devops.csdc.com/codeup' + repo;
         }
-        return 'https://' + s;
+        if (s.startsWith('git@git')) {
+            const repo = s.split(':')[1].replace('.git', '');
+            return 'https://git.sz.chinaclear.cn/' + repo;
+        }
+        return '';
     },
 
     async render(container) {
