@@ -50,10 +50,6 @@ type GitlabUser struct {
 
 // --- Auth API Requests ---
 
-type MockLoginRequest struct {
-	Username string `json:"username" binding:"required"`
-}
-
 type SetUserRolesRequest struct {
 	Roles []string `json:"roles"`
 }

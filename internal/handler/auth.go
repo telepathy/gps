@@ -35,13 +35,9 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
   .btn{display:block;width:100%;box-sizing:border-box;padding:11px;border-radius:8px;border:none;
        font-size:14px;cursor:pointer;margin-top:12px;text-decoration:none}
   .btn-gl{background:#fc6d26;color:#fff}
-  .btn-mock{background:#238636;color:#fff}
   .err{background:#3d1418;border:1px solid #f85149;color:#f85149;padding:10px;border-radius:6px;
        font-size:13px;margin-bottom:18px}
-  .hint{color:#8b949e;font-size:12px;margin-top:18px}
-  input{width:100%;box-sizing:border-box;padding:10px;border-radius:6px;border:1px solid #30363d;
-        background:#0d1117;color:#e6edf3;margin-top:12px}
-  .divider{color:#8b949e;font-size:12px;margin:22px 0 4px}
+  .hint{color:#8b949e;font-size:14px;margin-top:12px}
 </style></head>
 <body><div class="box">
   <div class="logo">GPS</div>
@@ -49,14 +45,9 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
   {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
   {{if .GitlabEnabled}}
     <a class="btn btn-gl" href="{{.GitlabAuthURL}}">使用 GitLab 账号登录</a>
-    <div class="divider">— 或使用内置账号 —</div>
   {{else}}
-    <div class="hint">GitLab SSO 未配置，使用内置账号登录</div>
+    <div class="hint">GitLab SSO 未配置，请联系管理员</div>
   {{end}}
-  <form method="POST" action="/auth/mock-login">
-    <input name="username" placeholder="用户名 (内置: admin)" value="admin" autocomplete="off"/>
-    <button class="btn btn-mock" type="submit">登录</button>
-  </form>
 </div></body></html>`))
 
 // LoginPage renders the standalone login page (not part of the SPA).
@@ -68,27 +59,6 @@ func (h *AuthHandler) LoginPage(c *gin.Context) {
 		"GitlabEnabled": h.authService.IsGitlabConfigured(),
 		"GitlabAuthURL": h.authService.GitlabAuthURL(),
 	})
-}
-
-// MockLogin authenticates against an existing in-memory user without GitLab.
-// Bootstrap path: the embedded `admin` account is always present.
-func (h *AuthHandler) MockLogin(c *gin.Context) {
-	username := c.PostForm("username")
-	if username == "" {
-		var req model.MockLoginRequest
-		_ = c.ShouldBindJSON(&req)
-		username = req.Username
-	}
-	if username == "" {
-		c.Redirect(http.StatusFound, "/auth/login?error="+template.URLQueryEscaper("用户名不能为空"))
-		return
-	}
-	user := h.store.GetUserByUsername(username)
-	if user == nil {
-		c.Redirect(http.StatusFound, "/auth/login?error="+template.URLQueryEscaper("用户不存在: "+username))
-		return
-	}
-	h.issueTokenAndRedirect(c, user)
 }
 
 // GitlabCallback handles the OAuth redirect from a self-signed GitLab instance.

@@ -68,7 +68,6 @@ func main() {
 
 	// Auth routes (public)
 	r.GET("/auth/login", authHandler.LoginPage)
-	r.POST("/auth/mock-login", authHandler.MockLogin)
 	r.GET("/auth/gitlab/callback", authHandler.GitlabCallback)
 
 	// API routes (require authentication)

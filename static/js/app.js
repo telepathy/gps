@@ -11,6 +11,9 @@ const App = {
             return; // redirected to login
         }
         this._renderUserArea();
+        if (!this.hasRole('admin') && (!window.location.hash || window.location.hash === '#/' || window.location.hash === '#')) {
+            window.location.hash = '#/repos';
+        }
         window.addEventListener('hashchange', () => this.route());
         this.route();
     },
@@ -42,8 +45,9 @@ const App = {
         const role = document.getElementById('user-role');
         if (role) role.textContent = (u.roles || []).join(', ') || '无角色';
         if (this.hasRole('admin')) {
-            const navAdmin = document.getElementById('nav-admin');
-            if (navAdmin) navAdmin.style.display = '';
+            document.querySelectorAll('[data-role="admin"]').forEach(el => {
+                el.style.display = '';
+            });
         }
         const logoutBtn = document.getElementById('logout-btn');
         if (logoutBtn) {
@@ -52,6 +56,19 @@ const App = {
                 window.location.href = '/auth/login';
             };
         }
+    },
+
+    _adminOnly(app) {
+        if (this.hasRole('admin')) return true;
+        this.currentPage = null;
+        app.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">&#128274;</div>
+                <p class="empty-state-text">无权限访问</p>
+                <a href="#/repos" class="btn btn-primary" style="margin-top:16px;">返回仓库管理</a>
+            </div>
+        `;
+        return false;
     },
 
     route() {
@@ -72,21 +89,25 @@ const App = {
         let match;
 
         if (hash === '#/' || hash === '#') {
-            this._setActiveNav('plan-create');
+            if (!this._adminOnly(app)) return;
+            this._setActiveNav('plans');
             this.currentPage = PlanCreatePage;
             PlanCreatePage.render(app);
 
         } else if (hash === '#/plans') {
+            if (!this._adminOnly(app)) return;
             this._setActiveNav('plans');
             this.currentPage = null;
             this._renderPlansPage(app);
 
         } else if ((match = hash.match(/^#\/plan\/([^/]+)\/confirm$/))) {
+            if (!this._adminOnly(app)) return;
             this._setActiveNav('plans');
             this.currentPage = VersionConfirmPage;
             VersionConfirmPage.render(app, match[1]);
 
         } else if ((match = hash.match(/^#\/plan\/([^/]+)\/monitor$/))) {
+            if (!this._adminOnly(app)) return;
             this._setActiveNav('plans');
             this.currentPage = ReleaseMonitorPage;
             ReleaseMonitorPage.render(app, match[1]);
@@ -97,23 +118,14 @@ const App = {
             ReposPage.render(app);
 
         } else if (hash === '#/history') {
+            if (!this._adminOnly(app)) return;
             this._setActiveNav('history');
             this.currentPage = ReleaseHistoryPage;
             ReleaseHistoryPage.render(app);
 
         } else if (hash === '#/admin') {
+            if (!this._adminOnly(app)) return;
             this._setActiveNav('admin');
-            if (!this.hasRole('admin')) {
-                this.currentPage = null;
-                app.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">&#128274;</div>
-                        <p class="empty-state-text">无权限访问</p>
-                        <a href="#/" class="btn btn-primary" style="margin-top:16px;">返回首页</a>
-                    </div>
-                `;
-                return;
-            }
             this.currentPage = AdminPage;
             AdminPage.render(app);
 
@@ -122,7 +134,7 @@ const App = {
                 <div class="empty-state">
                     <div class="empty-state-icon">&#128269;</div>
                     <p class="empty-state-text">页面未找到</p>
-                    <a href="#/" class="btn btn-primary" style="margin-top:16px;">返回首页</a>
+                    <a href="#/repos" class="btn btn-primary" style="margin-top:16px;">返回仓库管理</a>
                 </div>
             `;
         }
