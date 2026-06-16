@@ -67,5 +67,7 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/**/gps-server-*
-            artifacts/**/*.sha256
+            artifacts/**/gps-server-linux-amd64
+            artifacts/**/gps-server-linux-arm64
+            artifacts/**/gps-server-linux-amd64.sha256
+            artifacts/**/gps-server-linux-arm64.sha256
