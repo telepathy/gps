@@ -83,6 +83,7 @@ func (h *AuthHandler) GitlabCallback(c *gin.Context) {
 	}
 	user, _, err := h.store.FindOrCreateUser(&model.User{
 		Username:  gitlabUser.Username,
+		Name:      gitlabUser.Name,
 		Email:     email,
 		GitlabID:  gitlabUser.ID,
 		AvatarURL: gitlabUser.Avatar,

@@ -95,6 +95,7 @@ const AdminPage = {
               <thead><tr>
                 <th style="text-align:left;padding:12px 16px;">ID</th>
                 <th style="text-align:left;padding:12px 16px;">用户名</th>
+                <th style="text-align:left;padding:12px 16px;">全名</th>
                 <th style="text-align:left;padding:12px 16px;">角色</th>
                 <th style="text-align:left;padding:12px 16px;">允许的竖井 (* 或逗号分隔)</th>
                 <th style="text-align:left;padding:12px 16px;">操作</th>
@@ -111,6 +112,7 @@ const AdminPage = {
                 <tr style="border-top:1px solid var(--border);">
                   <td style="padding:12px 16px;">${u.id}</td>
                   <td style="padding:12px 16px;">${Utils.escapeHtml(u.username)}</td>
+                  <td style="padding:12px 16px;">${Utils.escapeHtml(u.name || '')}</td>
                   <td style="padding:12px 16px;">${checks}</td>
                   <td style="padding:12px 16px;">
                     <input type="text" class="silo-input" data-uid="${u.id}"

@@ -554,6 +554,9 @@ func (s *Store) FindOrCreateUser(in *model.User) (*model.User, bool, error) {
 		if in.GitlabID != 0 {
 			updates["gitlab_id"] = in.GitlabID
 		}
+		if in.Name != "" {
+			updates["name"] = in.Name
+		}
 		if in.Email != "" {
 			updates["email"] = in.Email
 		}
@@ -567,7 +570,7 @@ func (s *Store) FindOrCreateUser(in *model.User) (*model.User, bool, error) {
 		return &u, false, nil
 	}
 	newUser := model.GPSUser{
-		Username: in.Username, Email: in.Email, AvatarURL: in.AvatarURL, GitlabID: in.GitlabID,
+		Username: in.Username, Name: in.Name, Email: in.Email, AvatarURL: in.AvatarURL, GitlabID: in.GitlabID,
 		Roles: datatypes.NewJSONType([]string{model.RoleViewer}), AllowedSilos: "", CreatedAt: time.Now(),
 	}
 	if err := s.db.Create(&newUser).Error; err != nil {
@@ -725,7 +728,7 @@ func toUser(u model.GPSUser) model.User {
 		roles = []string{}
 	}
 	return model.User{
-		ID: u.ID, Username: u.Username, Email: u.Email, AvatarURL: u.AvatarURL,
+		ID: u.ID, Username: u.Username, Name: u.Name, Email: u.Email, AvatarURL: u.AvatarURL,
 		GitlabID: u.GitlabID, Roles: roles, AllowedSilos: u.AllowedSilos, CreatedAt: u.CreatedAt,
 	}
 }

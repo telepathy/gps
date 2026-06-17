@@ -24,6 +24,7 @@ const (
 type User struct {
 	ID           int       `json:"id"`
 	Username     string    `json:"username"` // 来自 GitLab，唯一
+	Name         string    `json:"name"`
 	Email        string    `json:"email"`
 	AvatarURL    string    `json:"avatar_url"`
 	GitlabID     int64     `json:"gitlab_id"`

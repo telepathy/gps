@@ -122,6 +122,7 @@ type GPSReleaseHistory struct {
 type GPSUser struct {
 	ID           int                          `gorm:"primaryKey;autoIncrement"`
 	Username     string                       `gorm:"size:128;uniqueIndex;not null"`
+	Name         string                       `gorm:"size:256"`
 	Email        string                       `gorm:"size:256"`
 	AvatarURL    string                       `gorm:"size:512"`
 	GitlabID     int64                        `gorm:"index"`

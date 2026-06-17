@@ -41,7 +41,7 @@ const App = {
         const avatar = document.getElementById('user-avatar');
         if (avatar) avatar.textContent = (u.username || '?')[0].toUpperCase();
         const name = document.getElementById('user-name');
-        if (name) name.textContent = u.username;
+        if (name) name.textContent = u.name || u.username;
         const role = document.getElementById('user-role');
         if (role) role.textContent = (u.roles || []).join(', ') || '无角色';
         if (this.hasRole('admin')) {

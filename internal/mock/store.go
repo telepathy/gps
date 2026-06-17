@@ -509,6 +509,9 @@ func (s *Store) FindOrCreateUser(in *model.User) (*model.User, bool, error) {
 		if in.GitlabID != 0 {
 			existing.GitlabID = in.GitlabID
 		}
+		if in.Name != "" {
+			existing.Name = in.Name
+		}
 		if in.Email != "" {
 			existing.Email = in.Email
 		}
@@ -521,6 +524,7 @@ func (s *Store) FindOrCreateUser(in *model.User) (*model.User, bool, error) {
 	u := &model.User{
 		ID:           s.userCounter,
 		Username:     in.Username,
+		Name:         in.Name,
 		Email:        in.Email,
 		AvatarURL:    in.AvatarURL,
 		GitlabID:     in.GitlabID,
