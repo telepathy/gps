@@ -5,6 +5,7 @@ import (
 	"gps/internal/mock"
 	"gps/internal/model"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,6 +130,81 @@ func (s *Store) GetAllRepos() []model.Repo {
 	var rows []model.GPSRepo
 	s.db.Order("silo_id, name").Find(&rows)
 	return toRepos(rows)
+}
+
+func (s *Store) SyncProductTree(dalaranSilos []model.Silo, dalaranRepos []model.Repo) (*model.SyncResult, error) {
+	result := &model.SyncResult{}
+
+	dalaranSiloIDs := make([]string, len(dalaranSilos))
+	for i, si := range dalaranSilos {
+		dalaranSiloIDs[i] = si.ID
+	}
+
+	var existingSilos []model.GPSSilo
+	s.db.Where("id NOT IN ?", dalaranSiloIDs).Find(&existingSilos)
+	if len(existingSilos) > 0 {
+		for _, sil := range existingSilos {
+			s.db.Delete(&model.GPSSilo{}, "id = ?", sil.ID)
+			result.SilosDeleted++
+		}
+	}
+
+	for _, si := range dalaranSilos {
+		var count int64
+		s.db.Model(&model.GPSSilo{}).Where("id = ?", si.ID).Count(&count)
+		if count == 0 {
+			s.db.Create(&model.GPSSilo{ID: si.ID, Name: si.Name, Desc: si.Desc})
+			result.SilosAdded++
+		}
+	}
+
+	var currentRepos []model.GPSRepo
+	s.db.Find(&currentRepos)
+	urlToRepo := make(map[string]model.GPSRepo)
+	for _, r := range currentRepos {
+		urlToRepo[r.URL] = r
+	}
+
+	nextID := s.nextRepoID()
+	dalaranURLs := make(map[string]bool)
+	for _, r := range dalaranRepos {
+		dalaranURLs[r.URL] = true
+		if _, exists := urlToRepo[r.URL]; !exists {
+			repoID := fmt.Sprintf("repo-%04d", nextID)
+			nextID++
+			s.db.Create(&model.GPSRepo{
+				ID:            repoID,
+				SiloID:        r.SiloID,
+				Name:          r.Name,
+				URL:           r.URL,
+				ReleaseBranch: "main",
+			})
+			result.ReposAdded++
+		}
+	}
+
+	for _, r := range currentRepos {
+		if !dalaranURLs[r.URL] {
+			s.db.Delete(&model.GPSRepo{}, "id = ?", r.ID)
+			result.ReposDeleted++
+		}
+	}
+
+	return result, nil
+}
+
+func (s *Store) nextRepoID() int {
+	var rows []model.GPSRepo
+	s.db.Find(&rows)
+	maxNum := 0
+	for _, r := range rows {
+		if strings.HasPrefix(r.ID, "repo-") {
+			if n, err := strconv.Atoi(r.ID[5:]); err == nil && n > maxNum {
+				maxNum = n
+			}
+		}
+	}
+	return maxNum + 1
 }
 
 func (s *Store) UpdateRepoBranch(repoID, branch string) (*model.Repo, error) {
@@ -732,3 +808,5 @@ func toUser(u model.GPSUser) model.User {
 		GitlabID: u.GitlabID, Roles: roles, AllowedSilos: u.AllowedSilos, CreatedAt: u.CreatedAt,
 	}
 }
+
+

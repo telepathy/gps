@@ -691,3 +691,88 @@ func bumpPatch(version string) string {
 	}
 	return fmt.Sprintf("%s.%s.%d", parts[0], parts[1], patch+1)
 }
+
+func (s *Store) nextRepoIDNum() int {
+	maxID := 0
+	for _, r := range s.Repos {
+		if strings.HasPrefix(r.ID, "repo-") {
+			if n, err := strconv.Atoi(strings.TrimPrefix(r.ID, "repo-")); err == nil && n > maxID {
+				maxID = n
+			}
+		}
+	}
+	return maxID + 1
+}
+
+func (s *Store) SyncProductTree(dalaranSilos []model.Silo, dalaranRepos []model.Repo) (*model.SyncResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := &model.SyncResult{}
+
+	dalaranSiloMap := make(map[string]bool)
+	for _, dsi := range dalaranSilos {
+		dalaranSiloMap[dsi.ID] = true
+	}
+
+	for _, si := range s.Silos {
+		if !dalaranSiloMap[si.ID] {
+			result.SilosDeleted++
+		}
+	}
+
+	seenSilo := make(map[string]bool)
+	var filteredSilos []model.Silo
+	for _, si := range s.Silos {
+		if dalaranSiloMap[si.ID] && !seenSilo[si.ID] {
+			filteredSilos = append(filteredSilos, si)
+			seenSilo[si.ID] = true
+		}
+	}
+	for _, dsi := range dalaranSilos {
+		if !seenSilo[dsi.ID] {
+			filteredSilos = append(filteredSilos, dsi)
+			seenSilo[dsi.ID] = true
+		}
+	}
+	s.Silos = filteredSilos
+
+	repoURLMap := make(map[string]bool)
+	for _, r := range s.Repos {
+		repoURLMap[r.URL] = true
+	}
+
+	var newRepos []model.Repo
+	nextID := s.nextRepoIDNum()
+	for _, dri := range dalaranRepos {
+		if !repoURLMap[dri.URL] {
+			newRepos = append(newRepos, model.Repo{
+				ID:            fmt.Sprintf("repo-%04d", nextID),
+				SiloID:        dri.SiloID,
+				Name:          dri.Name,
+				URL:           dri.URL,
+				ReleaseBranch: "main",
+			})
+			nextID++
+			result.ReposAdded++
+		}
+	}
+	s.Repos = append(s.Repos, newRepos...)
+
+	dalaranRepoURLs := make(map[string]bool)
+	for _, dri := range dalaranRepos {
+		dalaranRepoURLs[dri.URL] = true
+	}
+
+	var keptRepos []model.Repo
+	for _, r := range s.Repos {
+		if dalaranRepoURLs[r.URL] {
+			keptRepos = append(keptRepos, r)
+		} else {
+			result.ReposDeleted++
+		}
+	}
+	s.Repos = keptRepos
+
+	return result, nil
+}
