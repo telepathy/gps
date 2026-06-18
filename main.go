@@ -92,6 +92,7 @@ func main() {
 		// Repos (full list + release-branch config)
 		api.GET("/repos", repoHandler.ListRepos)
 		api.PUT("/repos/:id/branch", repoHandler.UpdateRepoBranch)
+		api.POST("/repos/sync", repoHandler.SyncRepos)
 
 		// Plans
 		api.POST("/plans", planHandler.CreatePlan)

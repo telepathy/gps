@@ -2,7 +2,9 @@ package handler
 
 import (
 	"net/http"
+	"os"
 
+	"gps/internal/dalaran"
 	"gps/internal/model"
 	"gps/internal/store"
 
@@ -10,11 +12,16 @@ import (
 )
 
 type RepoHandler struct {
-	store store.Store
+	store         store.Store
+	dalaranClient *dalaran.Client
 }
 
 func NewRepoHandler(store store.Store) *RepoHandler {
-	return &RepoHandler{store: store}
+	c := &RepoHandler{store: store}
+	if url := os.Getenv("GPS_DALARAN_URL"); url != "" {
+		c.dalaranClient = dalaran.NewClient(url)
+	}
+	return c
 }
 
 // ListRepos GET /api/repos
@@ -71,4 +78,31 @@ func (h *RepoHandler) UpdateRepoBranch(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, updated)
+}
+
+// SyncRepos POST /api/repos/sync
+// Reconciles the local silo/repo cache with the latest data from dalaran.
+// Requires the manage action (admin only).
+func (h *RepoHandler) SyncRepos(c *gin.Context) {
+	if h.dalaranClient == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "dalaran client not configured (GPS_DALARAN_URL not set)"})
+		return
+	}
+	if !requireAction(c, h.store, model.ActionManage) {
+		return
+	}
+
+	silos, repos, err := h.dalaranClient.FetchTree()
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "dalaran fetch failed: " + err.Error()})
+		return
+	}
+
+	result, err := h.store.SyncProductTree(silos, repos)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "sync failed: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
 }
