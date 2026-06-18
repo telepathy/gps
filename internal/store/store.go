@@ -12,6 +12,7 @@ type Store interface {
 	GetSilo(id string) *model.Silo
 	GetAllRepos() []model.Repo
 	UpdateRepoBranch(repoID, branch string) (*model.Repo, error)
+	SyncProductTree(dalaranSilos []model.Silo, dalaranRepos []model.Repo) (*model.SyncResult, error)
 
 	// --- Plans ---
 	CreatePlan(req model.CreatePlanRequest) *model.ReleasePlan

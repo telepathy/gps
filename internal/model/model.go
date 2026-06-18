@@ -53,6 +53,15 @@ type UpdateRepoBranchRequest struct {
 	ReleaseBranch string `json:"release_branch" binding:"required"`
 }
 
+// SyncResult reports the outcome of reconciling the local product tree
+// with the latest data from dalaran.
+type SyncResult struct {
+	SilosAdded   int `json:"silos_added"`
+	SilosDeleted int `json:"silos_deleted"`
+	ReposAdded   int `json:"repos_added"`
+	ReposDeleted int `json:"repos_deleted"`
+}
+
 // --- Dependency Graph ---
 
 // DepEdge represents a dependency edge between two modules (GA nodes).
