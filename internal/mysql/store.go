@@ -132,6 +132,33 @@ func (s *Store) GetAllRepos() []model.Repo {
 	return toRepos(rows)
 }
 
+func (s *Store) FindRepoByPath(repositoryPath string) *model.Repo {
+	name := repositoryPath
+	if idx := strings.LastIndex(repositoryPath, "/"); idx >= 0 {
+		name = repositoryPath[idx+1:]
+	}
+
+	// Step 1: find all candidates by name.
+	var rows []model.GPSRepo
+	s.db.Where("name = ?", name).Find(&rows)
+
+	switch len(rows) {
+	case 0:
+		return nil
+	case 1:
+		r := toRepo(rows[0])
+		return &r
+	default:
+		for _, row := range rows {
+			if urlMatchesPath(row.URL, repositoryPath) {
+				r := toRepo(row)
+				return &r
+			}
+		}
+		return nil
+	}
+}
+
 func (s *Store) SyncProductTree(dalaranSilos []model.Silo, dalaranRepos []model.Repo) (*model.SyncResult, error) {
 	result := &model.SyncResult{}
 
@@ -784,6 +811,23 @@ func bumpPatch(version string) string {
 	patch := 0
 	fmt.Sscanf(parts[2], "%d", &patch)
 	return fmt.Sprintf("%s.%s.%d", parts[0], parts[1], patch+1)
+}
+
+// urlMatchesPath checks whether a repo URL's path portion matches the given
+// repositoryPath after stripping protocol, host, and optional .git suffix.
+func urlMatchesPath(url, repositoryPath string) bool {
+	s := url
+	if idx := strings.Index(s, "://"); idx >= 0 {
+		s = s[idx+3:]
+	}
+	if idx := strings.Index(s, "@"); idx >= 0 {
+		s = s[idx+1:]
+	}
+	if idx := strings.Index(s, "/"); idx >= 0 {
+		s = s[idx+1:]
+	}
+	s = strings.TrimSuffix(s, ".git")
+	return s == repositoryPath
 }
 
 func toRepos(rows []model.GPSRepo) []model.Repo {

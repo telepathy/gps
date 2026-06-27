@@ -138,6 +138,39 @@ func (s *Store) GetAllRepos() []model.Repo {
 	return out
 }
 
+func (s *Store) FindRepoByPath(repositoryPath string) *model.Repo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	name := repositoryPath
+	if idx := strings.LastIndex(repositoryPath, "/"); idx >= 0 {
+		name = repositoryPath[idx+1:]
+	}
+
+	// Step 1: collect candidates by name.
+	var candidates []model.Repo
+	for _, r := range s.Repos {
+		if r.Name == name {
+			candidates = append(candidates, r)
+		}
+	}
+
+	// Step 2: disambiguate.
+	switch len(candidates) {
+	case 0:
+		return nil
+	case 1:
+		return &candidates[0]
+	default:
+		for _, r := range candidates {
+			if urlMatchesPath(r.URL, repositoryPath) {
+				return &r
+			}
+		}
+		return nil
+	}
+}
+
 func (s *Store) UpdateRepoBranch(repoID, branch string) (*model.Repo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -678,6 +711,27 @@ func (s *Store) findSilo(id string) *model.Silo {
 		}
 	}
 	return nil
+}
+
+// urlMatchesPath checks whether a repo URL's path portion matches the given
+// repositoryPath after stripping protocol, host, and optional .git suffix.
+// e.g. "ssh://git@host:9022/framework/newclear-framework.git" → "framework/newclear-framework"
+func urlMatchesPath(url, repositoryPath string) bool {
+	s := url
+	// Strip protocol: "ssh://git@host:9022/..." → "git@host:9022/..."
+	if idx := strings.Index(s, "://"); idx >= 0 {
+		s = s[idx+3:]
+	}
+	// Strip user@host:port: "git@host:9022/..." → "host:9022/..."
+	if idx := strings.Index(s, "@"); idx >= 0 {
+		s = s[idx+1:]
+	}
+	// Strip host:port: "host:9022/..." → "framework/..."
+	if idx := strings.Index(s, "/"); idx >= 0 {
+		s = s[idx+1:]
+	}
+	s = strings.TrimSuffix(s, ".git")
+	return s == repositoryPath
 }
 
 func bumpPatch(version string) string {

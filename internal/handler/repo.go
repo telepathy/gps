@@ -106,3 +106,26 @@ func (h *RepoHandler) SyncRepos(c *gin.Context) {
 
 	c.JSON(http.StatusOK, result)
 }
+
+// GetActiveBranch GET /api/repos/active-branch
+// Resolves a repositoryPath (e.g. "framework/newclear-framework") to the
+// repo's configured release branch. Matches by the last path segment as
+// Repo.Name, then disambiguates by URL path if multiple repos share the name.
+func (h *RepoHandler) GetActiveBranch(c *gin.Context) {
+	repositoryPath := c.Query("repositoryPath")
+	if repositoryPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "repositoryPath is required"})
+		return
+	}
+
+	repo := h.store.FindRepoByPath(repositoryPath)
+	if repo == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "repository not found: " + repositoryPath})
+		return
+	}
+
+	c.JSON(http.StatusOK, model.ActiveBranchResponse{
+		RepositoryPath: repositoryPath,
+		ActiveBranch:   repo.ReleaseBranch,
+	})
+}

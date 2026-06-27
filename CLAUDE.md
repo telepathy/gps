@@ -34,6 +34,7 @@ internal/
 │   └── simulator.go            # Goroutine-based release simulator (4-phase state machine)
 └── handler/
     ├── silo.go                 # GET /api/silos, repos, modules
+    ├── repo.go                 # GET /api/repos, active-branch, PUT branch, POST sync
     ├── plan.go                 # CRUD for release plans
     ├── release.go              # Execute, progress polling, SSE event stream, abort, retry
     └── history.go              # Historical release records
@@ -85,14 +86,20 @@ GPS coordinates four external systems (all mocked in `internal/mock/`):
 - **Topo-sort + concurrent pool** (not layer-based grouping): any module whose upstream deps are done can start immediately
 - **SSE for real-time updates**: unidirectional push from simulator to browser, simpler than WebSocket
 - **Mock data uses fixed seed (42)**: deterministic, reproducible data generation
+- **Active-branch lookup is name-based with URL disambiguation**: `GET /api/repos/active-branch?repositoryPath=group/repo` extracts the last segment as `Repo.Name`, then if multiple repos share the same name, resolves by matching the full path against `Repo.URL` (see `urlMatchesPath`). The API is public (no auth) to serve downstream tools like OpenGrok.
 
 ## API Routes (defined in `main.go`)
 
 All routes are under `/api`. The handlers delegate to `mock.Store` (thread-safe in-memory store) and `mock.Simulator` (goroutine-based release execution).
 
+Routes under `/api` require authentication except `GET /api/repos/active-branch` (public).
+
 | Group | Routes | Handler |
 |-------|--------|---------|
-| Product tree | `GET /api/silos`, `/api/silos/:id/repos`, `/api/repos/:id/modules` | `SiloHandler` |
+| Auth (public) | `GET /auth/login`, `GET /auth/gitlab/callback` | `AuthHandler` |
+| Repos (public) | `GET /api/repos/active-branch` | `RepoHandler` |
+| Product tree | `GET /api/silos`, `/api/silos/:id/repos` | `SiloHandler` |
+| Repos | `GET /api/repos`, `PUT /api/repos/:id/branch`, `POST /api/repos/sync` | `RepoHandler` |
 | Plans | `POST/GET /api/plans`, `GET /api/plans/:id`, `PUT /api/plans/:id/versions`, `POST /api/plans/:id/confirm` | `PlanHandler` |
 | Execution | `POST /api/plans/:id/execute`, `GET /api/plans/:id/progress`, `GET /api/plans/:id/events` (SSE), `POST /api/plans/:id/abort`, `POST /api/plans/:id/modules/:mid/retry` | `ReleaseHandler` |
 | History | `GET /api/history`, `GET /api/history/:id` | `HistoryHandler` |

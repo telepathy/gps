@@ -70,6 +70,9 @@ func main() {
 	r.GET("/auth/login", authHandler.LoginPage)
 	r.GET("/auth/gitlab/callback", authHandler.GitlabCallback)
 
+	// Public API routes (no authentication required)
+	r.GET("/api/repos/active-branch", repoHandler.GetActiveBranch)
+
 	// API routes (require authentication)
 	api := r.Group("/api")
 	api.Use(authMiddleware.RequireAuth())

@@ -53,6 +53,12 @@ type UpdateRepoBranchRequest struct {
 	ReleaseBranch string `json:"release_branch" binding:"required"`
 }
 
+// ActiveBranchResponse is returned by the active-branch lookup API.
+type ActiveBranchResponse struct {
+	RepositoryPath string `json:"repositoryPath"`
+	ActiveBranch   string `json:"activeBranch"`
+}
+
 // SyncResult reports the outcome of reconciling the local product tree
 // with the latest data from dalaran.
 type SyncResult struct {
