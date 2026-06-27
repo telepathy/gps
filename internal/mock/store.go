@@ -138,6 +138,39 @@ func (s *Store) GetAllRepos() []model.Repo {
 	return out
 }
 
+func (s *Store) FindRepoByPath(repositoryPath string) *model.Repo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	name := repositoryPath
+	if idx := strings.LastIndex(repositoryPath, "/"); idx >= 0 {
+		name = repositoryPath[idx+1:]
+	}
+
+	// Step 1: collect candidates by name.
+	var candidates []model.Repo
+	for _, r := range s.Repos {
+		if r.Name == name {
+			candidates = append(candidates, r)
+		}
+	}
+
+	// Step 2: disambiguate.
+	switch len(candidates) {
+	case 0:
+		return nil
+	case 1:
+		return &candidates[0]
+	default:
+		for _, r := range candidates {
+			if model.UrlMatchesPath(r.URL, repositoryPath) {
+				return &r
+			}
+		}
+		return nil
+	}
+}
+
 func (s *Store) UpdateRepoBranch(repoID, branch string) (*model.Repo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
