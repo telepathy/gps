@@ -150,7 +150,7 @@ func (s *Store) FindRepoByPath(repositoryPath string) *model.Repo {
 		return &r
 	default:
 		for _, row := range rows {
-			if urlMatchesPath(row.URL, repositoryPath) {
+			if model.UrlMatchesPath(row.URL, repositoryPath) {
 				r := toRepo(row)
 				return &r
 			}
@@ -811,23 +811,6 @@ func bumpPatch(version string) string {
 	patch := 0
 	fmt.Sscanf(parts[2], "%d", &patch)
 	return fmt.Sprintf("%s.%s.%d", parts[0], parts[1], patch+1)
-}
-
-// urlMatchesPath checks whether a repo URL's path portion matches the given
-// repositoryPath after stripping protocol, host, and optional .git suffix.
-func urlMatchesPath(url, repositoryPath string) bool {
-	s := url
-	if idx := strings.Index(s, "://"); idx >= 0 {
-		s = s[idx+3:]
-	}
-	if idx := strings.Index(s, "@"); idx >= 0 {
-		s = s[idx+1:]
-	}
-	if idx := strings.Index(s, "/"); idx >= 0 {
-		s = s[idx+1:]
-	}
-	s = strings.TrimSuffix(s, ".git")
-	return s == repositoryPath
 }
 
 func toRepos(rows []model.GPSRepo) []model.Repo {
