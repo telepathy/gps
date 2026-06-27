@@ -104,7 +104,7 @@ func mapTree(data []businessSilo) ([]model.Silo, []model.Repo) {
 				Name:          repoNameFromURL(cr.URL),
 				URL:           cr.URL,
 				ReleaseBranch: "main",
-				JDK:           "17",
+				JDK:           "21",
 			})
 		}
 	}

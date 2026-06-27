@@ -798,6 +798,7 @@ func (s *Store) SyncProductTree(dalaranSilos []model.Silo, dalaranRepos []model.
 				Name:          dri.Name,
 				URL:           dri.URL,
 				ReleaseBranch: "main",
+				JDK:           "21",
 			})
 			nextID++
 			result.ReposAdded++

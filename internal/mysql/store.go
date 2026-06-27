@@ -205,7 +205,7 @@ func (s *Store) SyncProductTree(dalaranSilos []model.Silo, dalaranRepos []model.
 				Name:          r.Name,
 				URL:           r.URL,
 				ReleaseBranch: "main",
-					JDK:           "17",
+					JDK:           "21",
 			})
 			result.ReposAdded++
 		}
@@ -240,9 +240,10 @@ func (s *Store) UpdateRepoBranch(repoID, branch string) (*model.Repo, error) {
 	if result.Error != nil {
 		return nil, result.Error
 	}
-	if result.RowsAffected == 0 {
-		return nil, fmt.Errorf("repo not found")
-	}
+	// NOTE: RowsAffected may be 0 when the value is unchanged because MySQL
+	// (without CLIENT_FOUND_ROWS) reports rows actually changed, not matched.
+	// The handler already verified the repo exists via GetRepo; treat no-op
+	// updates as success.
 	return s.GetRepo(repoID), nil
 }
 
@@ -251,9 +252,7 @@ func (s *Store) UpdateRepoBranch(repoID, branch string) (*model.Repo, error) {
 		if result.Error != nil {
 			return nil, result.Error
 		}
-		if result.RowsAffected == 0 {
-			return nil, fmt.Errorf("repo not found")
-		}
+		// NOTE: RowsAffected may be 0 when the value is unchanged (see UpdateRepoBranch).
 		return s.GetRepo(repoID), nil
 	}
 

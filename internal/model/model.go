@@ -18,7 +18,7 @@ type Repo struct {
 	Name          string `json:"name"`
 	URL           string `json:"url"`
 	ReleaseBranch string `json:"release_branch"`
-	JDK           string `json:"jdk"` // JDK 大版本（"8"/"17"/"21"），默认 "17"
+	JDK           string `json:"jdk"` // JDK 大版本（"8"/"17"/"21"），默认 "21"
 }
 
 // Module represents a Gradle subproject identified by GA (group:artifact).

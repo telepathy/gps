@@ -72,7 +72,7 @@ const ReposPage = {
               </tr></thead><tbody>
         `;
         rows.forEach(r => {
-            const jdk = r.jdk || '17';
+            const jdk = r.jdk || '21';
             const jdkCell = r.can_edit
                 ? `<select class="jdk-select" data-id="${r.id}"
                          style="box-sizing:border-box;height:32px;padding:4px 6px;border-radius:6px;
@@ -121,7 +121,7 @@ const ReposPage = {
         const branchInput = document.querySelector(`.branch-input[data-id="${repoId}"]`);
         const jdkSelect = document.querySelector(`.jdk-select[data-id="${repoId}"]`);
         const branch = branchInput ? branchInput.value.trim() : '';
-        const jdk = jdkSelect ? jdkSelect.value : '17';
+        const jdk = jdkSelect ? jdkSelect.value : '21';
 
         if (!branch) {
             alert('发布分支不能为空');
