@@ -95,6 +95,7 @@ func main() {
 		// Repos (full list + release-branch config)
 		api.GET("/repos", repoHandler.ListRepos)
 		api.PUT("/repos/:id/branch", repoHandler.UpdateRepoBranch)
+		api.PUT("/repos/:id/jdk", repoHandler.UpdateRepoJDK)
 		api.POST("/repos/sync", repoHandler.SyncRepos)
 
 		// Plans

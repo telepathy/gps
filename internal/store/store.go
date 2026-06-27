@@ -12,6 +12,7 @@ type Store interface {
 	GetSilo(id string) *model.Silo
 	GetAllRepos() []model.Repo
 	UpdateRepoBranch(repoID, branch string) (*model.Repo, error)
+	UpdateRepoJDK(repoID, jdk string) (*model.Repo, error)
 	FindRepoByPath(repositoryPath string) *model.Repo
 	SyncProductTree(dalaranSilos []model.Silo, dalaranRepos []model.Repo) (*model.SyncResult, error)
 

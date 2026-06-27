@@ -184,6 +184,19 @@ func (s *Store) UpdateRepoBranch(repoID, branch string) (*model.Repo, error) {
 	return nil, fmt.Errorf("repo not found")
 }
 
+	func (s *Store) UpdateRepoJDK(repoID, jdk string) (*model.Repo, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i := range s.Repos {
+			if s.Repos[i].ID == repoID {
+				s.Repos[i].JDK = jdk
+				r := s.Repos[i]
+				return &r, nil
+			}
+		}
+		return nil, fmt.Errorf("repo not found")
+	}
+
 // --- Plan operations ---
 
 func (s *Store) CreatePlan(req model.CreatePlanRequest) *model.ReleasePlan {

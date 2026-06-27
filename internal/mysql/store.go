@@ -86,7 +86,7 @@ func (s *Store) seedTree(silos []model.Silo, repos []model.Repo) {
 		s.db.Create(&model.GPSSilo{ID: si.ID, Name: si.Name, Desc: si.Desc})
 	}
 	for _, r := range repos {
-		s.db.Create(&model.GPSRepo{ID: r.ID, SiloID: r.SiloID, Name: r.Name, URL: r.URL, ReleaseBranch: r.ReleaseBranch})
+		s.db.Create(&model.GPSRepo{ID: r.ID, SiloID: r.SiloID, Name: r.Name, URL: r.URL, ReleaseBranch: r.ReleaseBranch, JDK: r.JDK})
 	}
 	log.Printf("mysql: seeded %d silos, %d repos", len(silos), len(repos))
 }
@@ -205,6 +205,7 @@ func (s *Store) SyncProductTree(dalaranSilos []model.Silo, dalaranRepos []model.
 				Name:          r.Name,
 				URL:           r.URL,
 				ReleaseBranch: "main",
+					JDK:           "17",
 			})
 			result.ReposAdded++
 		}
@@ -244,6 +245,17 @@ func (s *Store) UpdateRepoBranch(repoID, branch string) (*model.Repo, error) {
 	}
 	return s.GetRepo(repoID), nil
 }
+
+	func (s *Store) UpdateRepoJDK(repoID, jdk string) (*model.Repo, error) {
+		result := s.db.Model(&model.GPSRepo{}).Where("id = ?", repoID).Update("jdk", jdk)
+		if result.Error != nil {
+			return nil, result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil, fmt.Errorf("repo not found")
+		}
+		return s.GetRepo(repoID), nil
+	}
 
 // --- Plans ---
 
@@ -822,7 +834,7 @@ func toRepos(rows []model.GPSRepo) []model.Repo {
 }
 
 func toRepo(r model.GPSRepo) model.Repo {
-	return model.Repo{ID: r.ID, SiloID: r.SiloID, Name: r.Name, URL: r.URL, ReleaseBranch: r.ReleaseBranch}
+	return model.Repo{ID: r.ID, SiloID: r.SiloID, Name: r.Name, URL: r.URL, ReleaseBranch: r.ReleaseBranch, JDK: r.JDK}
 }
 
 func toUser(u model.GPSUser) model.User {

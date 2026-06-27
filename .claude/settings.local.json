@@ -8,7 +8,15 @@
       "Bash(pkill -f gps-server find . -not -path './.git/*' -not -name 'gps-server' -not -name '.gitignore' -type f)",
       "Bash(cp /tmp/gps_analysis.md /Users/chenhongyu/workspaces/gps/LAYER_REMOVAL_ANALYSIS.md)",
       "Bash(cat)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "WebFetch(domain:github.com)",
+      "Bash(gh pr *)",
+      "Bash(git checkout *)",
+      "Bash(git pull *)",
+      "Bash(git branch *)",
+      "Bash(gh release *)",
+      "Bash(git tag *)",
+      "Bash(git push *)"
     ]
   }
 }

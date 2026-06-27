@@ -1,12 +1,9 @@
 // Repos page: flat table of all repos with a silo-code filter.
-// Columns: silo code, repo name (link to web URL), release branch, action.
-// Branch is editable only for repos whose silo is within the user's scope.
+// Columns: silo code, repo name (link to web URL), JDK, release branch, action.
+// Branch and JDK are editable only for repos whose silo is within the user's scope.
 const ReposPage = {
     _repos: [],
 
-    // Convert a git SSH URL to a browser-openable HTTPS URL.
-    // ssh://git@host:9022/group/sub/name.git -> https://host/group/sub/name
-    // git@host:group/name.git                -> https://host/group/name
     _webURL(url) {
         if (!url) return '';
         const s = url.trim();
@@ -28,7 +25,7 @@ const ReposPage = {
                 <div class="page-header">
                     <div>
                         <h1 class="page-title">仓库管理</h1>
-                        <p class="page-subtitle">查看全量仓库；对有权限的竖井可配置发布分支</p>
+                        <p class="page-subtitle">查看全量仓库；对有权限的竖井可配置 JDK 版本和发布分支</p>
                     </div>
                 </div>
                 <div style="margin-bottom:12px;">
@@ -69,17 +66,29 @@ const ReposPage = {
               <thead><tr>
                 <th style="text-align:left;padding:10px 16px;width:120px;">竖井代码</th>
                 <th style="text-align:left;padding:10px 16px;">仓库</th>
-                <th style="text-align:left;padding:10px 16px;width:220px;">发布分支</th>
-                <th style="text-align:left;padding:10px 16px;width:90px;">操作</th>
+                <th style="text-align:left;padding:10px 16px;width:80px;">JDK</th>
+                <th style="text-align:left;padding:10px 16px;width:200px;">发布分支</th>
+                <th style="text-align:left;padding:10px 16px;width:100px;">操作</th>
               </tr></thead><tbody>
         `;
         rows.forEach(r => {
+            const jdk = r.jdk || '17';
+            const jdkCell = r.can_edit
+                ? `<select class="jdk-select" data-id="${r.id}"
+                         style="box-sizing:border-box;height:32px;padding:4px 6px;border-radius:6px;
+                                border:1px solid var(--border);background:var(--bg);color:var(--text);">
+                    <option value="8" ${jdk === '8' ? 'selected' : ''}>8</option>
+                    <option value="17" ${jdk === '17' ? 'selected' : ''}>17</option>
+                    <option value="21" ${jdk === '21' ? 'selected' : ''}>21</option>
+                   </select>`
+                : `<span style="display:inline-flex;align-items:center;box-sizing:border-box;height:32px;
+                          padding:6px 8px;border:1px solid transparent;color:var(--text);">${Utils.escapeHtml(jdk)}</span>`;
             const branchCell = r.can_edit
                 ? `<input type="text" class="branch-input" data-id="${r.id}"
                          value="${Utils.escapeHtml(r.release_branch || '')}"
                          placeholder="如 release/2025Q2"
                          style="box-sizing:border-box;height:32px;padding:6px 8px;border-radius:6px;
-                                border:1px solid var(--border);background:var(--bg);color:var(--text);width:200px;"/>`
+                                border:1px solid var(--border);background:var(--bg);color:var(--text);width:180px;"/>`
                 : `<span style="display:inline-flex;align-items:center;box-sizing:border-box;height:32px;
                           padding:6px 8px;border:1px solid transparent;color:var(--text);">${Utils.escapeHtml(r.release_branch || '-')}</span>`;
             const actionCell = r.can_edit
@@ -94,6 +103,7 @@ const ReposPage = {
                 <tr style="border-top:1px solid var(--border);">
                   <td style="padding:10px 16px;">${Utils.escapeHtml(r.silo_id || '')}</td>
                   <td style="padding:10px 16px;">${nameCell}</td>
+                  <td style="padding:10px 16px;">${jdkCell}</td>
                   <td style="padding:10px 16px;">${branchCell}</td>
                   <td style="padding:10px 16px;">${actionCell}</td>
                 </tr>
@@ -108,8 +118,11 @@ const ReposPage = {
     },
 
     async _save(repoId, btn) {
-        const input = document.querySelector(`.branch-input[data-id="${repoId}"]`);
-        const branch = input ? input.value.trim() : '';
+        const branchInput = document.querySelector(`.branch-input[data-id="${repoId}"]`);
+        const jdkSelect = document.querySelector(`.jdk-select[data-id="${repoId}"]`);
+        const branch = branchInput ? branchInput.value.trim() : '';
+        const jdk = jdkSelect ? jdkSelect.value : '17';
+
         if (!branch) {
             alert('发布分支不能为空');
             return;
@@ -119,9 +132,9 @@ const ReposPage = {
         btn.textContent = '保存中...';
         try {
             await API.updateRepoBranch(repoId, branch);
-            // keep local copy in sync so filtering doesn't revert the edit
+            await API.updateRepoJDK(repoId, jdk);
             const r = this._repos.find(x => x.id === repoId);
-            if (r) r.release_branch = branch;
+            if (r) { r.release_branch = branch; r.jdk = jdk; }
             btn.textContent = '已保存';
             setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1200);
         } catch (e) {

@@ -34,6 +34,7 @@ type GPSRepo struct {
 	Name          string `gorm:"size:256;not null"`
 	URL           string `gorm:"size:512"`
 	ReleaseBranch string `gorm:"size:128;not null;default:main"`
+	JDK           string `gorm:"size:8;not null;default:17"`
 }
 
 // --- Release plan ---

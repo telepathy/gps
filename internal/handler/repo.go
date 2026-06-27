@@ -80,6 +80,37 @@ func (h *RepoHandler) UpdateRepoBranch(c *gin.Context) {
 	c.JSON(http.StatusOK, updated)
 }
 
+	// UpdateRepoJDK PUT /api/repos/:id/jdk
+	func (h *RepoHandler) UpdateRepoJDK(c *gin.Context) {
+		if !requireAction(c, h.store, model.ActionRelease) {
+			return
+		}
+		repoID := c.Param("id")
+		repo := h.store.GetRepo(repoID)
+		if repo == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+			return
+		}
+		if !requireSilos(c, currentUser(c, h.store), []string{repo.SiloID}) {
+			return
+		}
+		var req model.UpdateRepoJDKRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.JDK != "8" && req.JDK != "17" && req.JDK != "21" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "jdk must be 8, 17, or 21"})
+			return
+		}
+		updated, err := h.store.UpdateRepoJDK(repoID, req.JDK)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, updated)
+	}
+
 // SyncRepos POST /api/repos/sync
 // Reconciles the local silo/repo cache with the latest data from dalaran.
 // Requires the manage action (admin only).

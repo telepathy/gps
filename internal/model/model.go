@@ -18,6 +18,7 @@ type Repo struct {
 	Name          string `json:"name"`
 	URL           string `json:"url"`
 	ReleaseBranch string `json:"release_branch"`
+	JDK           string `json:"jdk"` // JDK 大版本（"8"/"17"/"21"），默认 "17"
 }
 
 // Module represents a Gradle subproject identified by GA (group:artifact).
@@ -51,6 +52,11 @@ type RepoView struct {
 // UpdateRepoBranchRequest sets a repo's release branch.
 type UpdateRepoBranchRequest struct {
 	ReleaseBranch string `json:"release_branch" binding:"required"`
+}
+
+// UpdateRepoJDKRequest sets a repo's JDK version.
+type UpdateRepoJDKRequest struct {
+	JDK string `json:"jdk" binding:"required"`
 }
 
 // ActiveBranchResponse is returned by the active-branch lookup API.

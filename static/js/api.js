@@ -61,6 +61,7 @@ const API = {
     // Repos (full list + branch config)
     getRepos() { return this.get('/api/repos'); },
     updateRepoBranch(repoId, releaseBranch) { return this.put(`/api/repos/${repoId}/branch`, { release_branch: releaseBranch }); },
+    updateRepoJDK(repoId, jdk) { return this.put(`/api/repos/${repoId}/jdk`, { jdk }); },
 
     // Plans
     createPlan(data) { return this.post('/api/plans', data); },
